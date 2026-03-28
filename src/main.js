@@ -149,7 +149,7 @@ function getPillBounds() {
   // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((wa.width - settings.pillWidth) / 2),
+    x: wa.x + Math.round((wa.width - settings.pillWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.pillWidth,
     height: settings.pillHeight,
@@ -163,26 +163,28 @@ function getExpandedBounds() {
 
   if (pos === "left") {
     const clampedH = Math.min(settings.expandedHeight, wa.height);
+    const clampedW = Math.min(settings.expandedWidth, wa.width);
     return {
       x: wa.x,
       y: wa.y + Math.round((wa.height - clampedH) / 2),
-      width: settings.expandedWidth,
+      width: clampedW,
       height: clampedH,
     };
   }
   if (pos === "right") {
     const clampedH = Math.min(settings.expandedHeight, wa.height);
+    const clampedW = Math.min(settings.expandedWidth, wa.width);
     return {
-      x: wa.x + wa.width - settings.expandedWidth,
+      x: wa.x + wa.width - clampedW,
       y: wa.y + Math.round((wa.height - clampedH) / 2),
-      width: settings.expandedWidth,
+      width: clampedW,
       height: clampedH,
     };
   }
   // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((wa.width - settings.expandedWidth) / 2),
+    x: wa.x + Math.round((wa.width - settings.expandedWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.expandedWidth,
     height: settings.expandedHeight,
