@@ -178,10 +178,10 @@ function renderProjectDropdown() {
       btn.innerHTML = `
         <span style="font-size:13px;">📂</span>
         <div style="min-width:0;flex:1;">
-          <div class="proj-opt-name">${proj.name}</div>
-          <div class="proj-opt-path">${proj.path}</div>
+          <div class="proj-opt-name">${escapeHtml(proj.name)}</div>
+          <div class="proj-opt-path">${escapeHtml(proj.path)}</div>
         </div>
-        <span class="proj-opt-source">${label}</span>
+        <span class="proj-opt-source">${escapeHtml(label)}</span>
       `;
       btn.addEventListener("click", () => selectProject(proj));
       projectDropdown.appendChild(btn);
@@ -201,11 +201,12 @@ async function selectProject(project) {
   projNameText.textContent = project.name;
   closeDropdown();
 
-  // cd the active terminal into the project directory
+  // cd the active terminal into the project directory (local tabs only)
   if (activeTabId) {
-    window.wotch.writePty(activeTabId, `cd "${project.path}"\r`);
     const activeTab = tabs.find((t) => t.id === activeTabId);
-    if (activeTab) {
+    if (activeTab && activeTab.connectionType !== "ssh") {
+      const escapedPath = project.path.replace(/'/g, "'\\''");
+      window.wotch.writePty(activeTabId, `cd '${escapedPath}'\r`);
       activeTab.cwd = project.path;
       activeTab.name = project.name;
       renderTabBar();
@@ -286,7 +287,8 @@ async function doCheckpoint() {
   btnCheckpoint.textContent = "⏳ Saving...";
 
   try {
-    const result = await window.wotch.gitCheckpoint(currentProject.path);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const result = await window.wotch.gitCheckpoint(currentProject.path, `wotch-checkpoint-${timestamp}`);
     if (result.success) {
       showToast(`✓ ${result.message} (${result.details.changedFiles} files)`, "success");
     } else {
@@ -415,6 +417,24 @@ function closeTab(tabId) {
   const idx = tabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return;
 
+  // Dismiss any SSH dialogs for this tab
+  const credResolve = credentialResolves.get(tabId);
+  if (credResolve) { credResolve(null); credentialResolves.delete(tabId); sshCredentialOverlay.classList.remove("open"); }
+  // Dismiss active host-key dialog if it belongs to this tab
+  if (hostVerifyActiveTabId === tabId) {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, false);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
+  }
+  // Remove any queued host-verify requests for this tab
+  for (let i = hostVerifyQueue.length - 1; i >= 0; i--) {
+    if (hostVerifyQueue[i].tabId === tabId) {
+      hostVerifyQueue.splice(i, 1);
+      window.wotch.sshHostVerifyResponse(tabId, false);
+    }
+  }
+
   window.wotch.killPty(tabId);
   tabs[idx].term.dispose();
   tabs[idx].el.remove();
@@ -504,6 +524,8 @@ window.wotch.onPtyExit(({ tabId, exitCode }) => {
   const tab = tabs.find((t) => t.id === tabId);
   if (tab) {
     tab.term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
+    tabStatuses[tabId] = { state: exitCode === 0 ? "idle" : "error", description: "Exited" };
+    renderTabBar();
   }
 });
 
@@ -649,34 +671,11 @@ async function showNewTabMenu(e) {
   newTabMenuOpen = true;
 }
 
-function showSshConnectDialog() {
-  openSshEditor(null);
-  // After saving, also connect
-  const origHandler = document.getElementById("btn-ssh-save").onclick;
-  document.getElementById("btn-ssh-save").onclick = null;
+let connectAfterSave = false;
 
-  const onSave = async () => {
-    const profile = {
-      id: editingProfileId || undefined,
-      name: document.getElementById("ssh-name").value.trim() || "Unnamed",
-      host: document.getElementById("ssh-host").value.trim(),
-      port: parseInt(document.getElementById("ssh-port").value) || 22,
-      username: document.getElementById("ssh-username").value.trim(),
-      authMethod: document.getElementById("ssh-auth-method").value,
-      keyPath: document.getElementById("ssh-key-path").value.trim(),
-    };
-    if (!profile.host || !profile.username) {
-      showToast("Host and username are required", "error");
-      return;
-    }
-    const saved = await window.wotch.sshSaveProfile(profile);
-    sshEditorOverlay.classList.remove("open");
-    renderSshProfiles();
-    createTab(null, saved);
-    // Restore normal save handler
-    document.getElementById("btn-ssh-save").removeEventListener("click", onSave);
-  };
-  document.getElementById("btn-ssh-save").addEventListener("click", onSave);
+function showSshConnectDialog() {
+  connectAfterSave = true;
+  openSshEditor(null);
 }
 
 // Close menu when clicking outside
@@ -722,7 +721,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (sshCredentialOverlay.classList.contains("open")) document.getElementById("btn-ssh-cred-cancel").click();
     else if (sshHostkeyOverlay.classList.contains("open")) document.getElementById("btn-ssh-hostkey-reject").click();
-    else if (sshEditorOverlay.classList.contains("open")) sshEditorOverlay.classList.remove("open");
+    else if (sshEditorOverlay.classList.contains("open")) { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); }
     else if (newTabMenuOpen) closeNewTabMenu();
     else if (paletteOpen) closePalette();
     else if (searchOpen) closeSearch();
@@ -831,7 +830,7 @@ async function loadSettingsUI() {
       try {
         const displays = await window.wotch.getDisplays();
         setDisplay.innerHTML = displays.map((d) =>
-          `<option value="${d.index}">${d.label} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
+          `<option value="${d.index}">${escapeHtml(d.label)} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
         ).join("");
         setDisplay.value = s.displayIndex || 0;
       } catch { /* ignore */ }
@@ -1014,14 +1013,19 @@ document.getElementById("btn-ssh-save").addEventListener("click", async () => {
     showToast("Host and username are required", "error");
     return;
   }
-  await window.wotch.sshSaveProfile(profile);
+  const saved = await window.wotch.sshSaveProfile(profile);
   sshEditorOverlay.classList.remove("open");
   renderSshProfiles();
-  showToast(`SSH connection "${profile.name}" saved`, "success");
+  if (connectAfterSave) {
+    connectAfterSave = false;
+    createTab(null, saved);
+  } else {
+    showToast(`SSH connection "${profile.name}" saved`, "success");
+  }
 });
 
-document.getElementById("btn-ssh-editor-close").addEventListener("click", () => sshEditorOverlay.classList.remove("open"));
-document.getElementById("btn-ssh-cancel").addEventListener("click", () => sshEditorOverlay.classList.remove("open"));
+document.getElementById("btn-ssh-editor-close").addEventListener("click", () => { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); });
+document.getElementById("btn-ssh-cancel").addEventListener("click", () => { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); });
 btnSshAdd.addEventListener("click", () => openSshEditor(null));
 
 // ── SSH Credential Prompt ────────────────────────────
@@ -1041,15 +1045,19 @@ function promptSshCredential(tabId, type, promptText) {
 }
 
 document.getElementById("btn-ssh-cred-ok").addEventListener("click", () => {
-  const val = document.getElementById("ssh-credential-input").value;
-  const tabId = document.getElementById("ssh-credential-input").dataset.tabId;
+  const input = document.getElementById("ssh-credential-input");
+  const val = input.value;
+  const tabId = input.dataset.tabId;
+  input.value = ""; // Clear password from DOM immediately
   sshCredentialOverlay.classList.remove("open");
   const resolve = credentialResolves.get(tabId);
   if (resolve) { resolve(val); credentialResolves.delete(tabId); }
 });
 
 document.getElementById("btn-ssh-cred-cancel").addEventListener("click", () => {
-  const tabId = document.getElementById("ssh-credential-input").dataset.tabId;
+  const input = document.getElementById("ssh-credential-input");
+  const tabId = input.dataset.tabId;
+  input.value = ""; // Clear password from DOM immediately
   sshCredentialOverlay.classList.remove("open");
   const resolve = credentialResolves.get(tabId);
   if (resolve) { resolve(null); credentialResolves.delete(tabId); }
@@ -1064,8 +1072,15 @@ window.wotch.onSshCredentialRequest(async ({ tabId, type, prompt }) => {
   window.wotch.sshCredentialResponse(tabId, credential);
 });
 
-// ── SSH Host Key Verification ────────────────────────
-window.wotch.onSshHostVerify(({ tabId, host, port, fingerprint, isChanged }) => {
+// ── SSH Host Key Verification (queued) ──────────────
+const hostVerifyQueue = []; // { tabId, host, port, fingerprint, isChanged }
+let hostVerifyActiveTabId = null; // tabId of the currently shown dialog, or null
+
+function processHostVerifyQueue() {
+  if (hostVerifyActiveTabId !== null || hostVerifyQueue.length === 0) return;
+  const { tabId, host, port, fingerprint, isChanged } = hostVerifyQueue.shift();
+  hostVerifyActiveTabId = tabId;
+
   const msg = isChanged
     ? `WARNING: Host key for ${host}:${port} has CHANGED! This could indicate a man-in-the-middle attack. Do you still want to connect?`
     : `The authenticity of host '${host}:${port}' can't be established. Do you want to continue connecting?`;
@@ -1076,11 +1091,20 @@ window.wotch.onSshHostVerify(({ tabId, host, port, fingerprint, isChanged }) => 
   document.getElementById("btn-ssh-hostkey-accept").onclick = () => {
     sshHostkeyOverlay.classList.remove("open");
     window.wotch.sshHostVerifyResponse(tabId, true);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
   };
   document.getElementById("btn-ssh-hostkey-reject").onclick = () => {
     sshHostkeyOverlay.classList.remove("open");
     window.wotch.sshHostVerifyResponse(tabId, false);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
   };
+}
+
+window.wotch.onSshHostVerify(({ tabId, host, port, fingerprint, isChanged }) => {
+  hostVerifyQueue.push({ tabId, host, port, fingerprint, isChanged });
+  processHostVerifyQueue();
 });
 
 // ── Terminal search (Ctrl+F) ──────────────────────────
@@ -1174,20 +1198,24 @@ resizeHandle.addEventListener("mousedown", (e) => {
   e.preventDefault();
 });
 
+let resizeRafPending = false;
 document.addEventListener("mousemove", (e) => {
   if (!resizing) return;
-  const pos = document.body.classList.contains("position-left") ? "left"
-    : document.body.classList.contains("position-right") ? "right" : "top";
-  if (pos === "left") {
-    const delta = e.screenX - resizeStartX;
-    window.wotch.resizeWindow(resizeStartWidth + delta);
-  } else if (pos === "right") {
-    const delta = resizeStartX - e.screenX;
-    window.wotch.resizeWindow(resizeStartWidth + delta);
-  } else {
-    const delta = e.screenY - resizeStartY;
-    window.wotch.resizeWindow(resizeStartHeight + delta);
-  }
+  if (resizeRafPending) return;
+  const sx = e.screenX, sy = e.screenY;
+  resizeRafPending = true;
+  requestAnimationFrame(() => {
+    resizeRafPending = false;
+    const pos = document.body.classList.contains("position-left") ? "left"
+      : document.body.classList.contains("position-right") ? "right" : "top";
+    if (pos === "left") {
+      window.wotch.resizeWindow(resizeStartWidth + (sx - resizeStartX));
+    } else if (pos === "right") {
+      window.wotch.resizeWindow(resizeStartWidth + (resizeStartX - sx));
+    } else {
+      window.wotch.resizeWindow(resizeStartHeight + (sy - resizeStartY));
+    }
+  });
 });
 
 document.addEventListener("mouseup", () => {
@@ -1340,11 +1368,6 @@ paletteList.addEventListener("click", (e) => {
       detectedProjects.find((p) => p.source === "vscode-recent");
     if (autoProject) {
       await selectProject(autoProject);
-      // cd the first tab into the project
-      window.wotch.writePty(tabs[0].id, `cd "${autoProject.path}"\r`);
-      tabs[0].name = autoProject.name;
-      tabs[0].cwd = autoProject.path;
-      renderTabBar();
     }
   } catch { /* no projects found, that's fine */ }
 })();

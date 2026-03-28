@@ -94,7 +94,7 @@ function saveSettings(settings) {
     if (!fs.existsSync(SETTINGS_DIR)) {
       fs.mkdirSync(SETTINGS_DIR, { recursive: true });
     }
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), { encoding: "utf-8", mode: 0o600 });
     return true;
   } catch (err) {
     console.log("[wotch] Failed to save settings:", err.message);
@@ -121,7 +121,7 @@ function saveKnownHosts(hosts) {
     if (!fs.existsSync(SETTINGS_DIR)) {
       fs.mkdirSync(SETTINGS_DIR, { recursive: true });
     }
-    fs.writeFileSync(KNOWN_HOSTS_FILE, JSON.stringify(hosts, null, 2), "utf-8");
+    fs.writeFileSync(KNOWN_HOSTS_FILE, JSON.stringify(hosts, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {
     console.log("[wotch] Failed to save known hosts:", err.message);
   }
@@ -310,6 +310,7 @@ function collapse() {
   if (isPinned) return;
 
   collapseTimeout = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) { collapseTimeout = null; return; }
     isExpanded = false;
     const bounds = getPillBounds();
     mainWindow.setBounds(bounds, true);
@@ -319,6 +320,7 @@ function collapse() {
 }
 
 function toggle() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   // Toggle always works, even when pinned
   if (isExpanded) {
     if (collapseTimeout) clearTimeout(collapseTimeout);
@@ -539,21 +541,26 @@ async function createSshSession(tabId, profileId, password) {
   return new Promise((resolve, reject) => {
     let resolved = false;
 
-    // Host key verification
-    connectOpts.hostVerifier = async (key) => {
+    // Host key verification — MUST use callback pattern (key, verify) => {}
+    // An async function returns a Promise (truthy), which ssh2 treats as verify(true),
+    // auto-accepting all host keys. Use verify() callback instead.
+    connectOpts.hostVerifier = (key, verify) => {
       const fingerprint = crypto.createHash("sha256").update(key).digest("base64");
       const knownHosts = loadKnownHosts();
 
-      if (knownHosts[hostKey] === fingerprint) return true;
+      if (knownHosts[hostKey] === fingerprint) {
+        verify(true);
+        return;
+      }
 
       const isChanged = hostKey in knownHosts;
-      const accepted = await requestHostVerify(tabId, profile.host, profile.port, fingerprint, isChanged);
-      if (accepted) {
-        knownHosts[hostKey] = fingerprint;
-        saveKnownHosts(knownHosts);
-        return true;
-      }
-      return false;
+      requestHostVerify(tabId, profile.host, profile.port, fingerprint, isChanged).then((accepted) => {
+        if (accepted) {
+          knownHosts[hostKey] = fingerprint;
+          saveKnownHosts(knownHosts);
+        }
+        verify(accepted);
+      });
     };
 
     client.on("ready", () => {
@@ -572,32 +579,38 @@ async function createSshSession(tabId, profileId, password) {
 
         stream.on("close", () => {
           sendToTab(tabId, "\r\n\x1b[90m── SSH session closed ──\x1b[0m\r\n");
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
-          }
 
           const session = sshSessions.get(tabId);
-          if (session) {
+          if (session && session.authMethod === "key" && !session.userKilled) {
             // Attempt reconnect for key-based auth (password was discarded)
-            if (session.authMethod === "key" && !session.userKilled) {
-              sendToTab(tabId, "\x1b[33mSSH connection lost. Reconnecting in 3s...\x1b[0m\r\n");
-              session.reconnectTimer = setTimeout(async () => {
-                try {
-                  sshSessions.delete(tabId);
-                  claudeStatus.removeTab(tabId);
-                  await createSshSession(tabId, profileId);
-                } catch (e) {
-                  sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
+            sendToTab(tabId, "\x1b[33mSSH connection lost. Reconnecting in 3s...\x1b[0m\r\n");
+            session.reconnectTimer = setTimeout(async () => {
+              try {
+                sshSessions.delete(tabId);
+                claudeStatus.removeTab(tabId);
+                await createSshSession(tabId, profileId);
+              } catch (e) {
+                sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send("pty-exit", { tabId, exitCode: 1 });
                 }
-              }, 3000);
-            } else if (session.authMethod === "password" && !session.userKilled) {
-              sendToTab(tabId, "\x1b[33mSSH connection lost. Open a new SSH tab to reconnect.\x1b[0m\r\n");
-            }
-          }
-
-          if (!session || session.userKilled) {
+              }
+            }, 3000);
+          } else if (session && session.authMethod === "password" && !session.userKilled) {
+            // Password-auth: can't auto-reconnect (password was discarded)
+            sendToTab(tabId, "\x1b[33mSSH connection lost. Open a new SSH tab to reconnect.\x1b[0m\r\n");
             sshSessions.delete(tabId);
             claudeStatus.removeTab(tabId);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
+            }
+          } else {
+            // User-killed or no session — final cleanup
+            sshSessions.delete(tabId);
+            claudeStatus.removeTab(tabId);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
+            }
           }
         });
 
@@ -617,6 +630,11 @@ async function createSshSession(tabId, profileId, password) {
 
     client.on("error", (err) => {
       sendToTab(tabId, `\x1b[31mSSH Error: ${err.message}\x1b[0m\r\n`);
+      // Clean up pending credential/host-verify promises for this tab
+      const pc = pendingCredentials.get(tabId);
+      if (pc) { pc.reject(err); pendingCredentials.delete(tabId); }
+      const ph = pendingHostVerify.get(tabId);
+      if (ph) { ph.resolve(false); pendingHostVerify.delete(tabId); }
       if (!resolved) { resolved = true; reject(err); }
     });
 
@@ -629,7 +647,10 @@ async function createSshSession(tabId, profileId, password) {
           responses.push(credential || "");
         }
         finish(responses);
-      })();
+      })().catch((err) => {
+        sendToTab(tabId, `\x1b[31mKeyboard-interactive auth failed: ${err.message}\x1b[0m\r\n`);
+        finish([]);
+      });
     });
 
     client.connect(connectOpts);
@@ -969,7 +990,7 @@ class ClaudeStatusDetector {
 const claudeStatus = new ClaudeStatusDetector();
 
 // Also detect idle timeout — if no output for 5s while in thinking/working, might be done
-setInterval(() => {
+const idleCheckInterval = setInterval(() => {
   const now = Date.now();
   for (const [tabId, tab] of claudeStatus.tabs) {
     if ((tab.state === "thinking" || tab.state === "working") && now - tab.lastActivity > 5000) {
@@ -1430,6 +1451,11 @@ ipcMain.on("pty-kill", (_event, { tabId }) => {
     if (s.client) s.client.end();
     sshSessions.delete(tabId);
   }
+  // Clean up any pending credential/host-verify promises for this tab
+  const pc = pendingCredentials.get(tabId);
+  if (pc) { pc.reject(new Error("Tab closed")); pendingCredentials.delete(tabId); }
+  const ph = pendingHostVerify.get(tabId);
+  if (ph) { ph.resolve(false); pendingHostVerify.delete(tabId); }
   claudeStatus.removeTab(tabId);
 });
 
@@ -1489,7 +1515,9 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
 });
 
 ipcMain.handle("reset-settings", () => {
+  const preservedProfiles = settings.sshProfiles;
   settings = { ...DEFAULT_SETTINGS };
+  settings.sshProfiles = preservedProfiles;
   saveSettings(settings);
   isPinned = false;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1573,6 +1601,14 @@ ipcMain.on("ssh-host-verify-response", (_event, { tabId, accepted }) => {
 });
 
 ipcMain.handle("ssh-save-profile", (_event, profile) => {
+  if (!profile || typeof profile.host !== "string" || !profile.host.trim()) {
+    throw new Error("Invalid SSH profile: host is required");
+  }
+  if (typeof profile.username !== "string" || !profile.username.trim()) {
+    throw new Error("Invalid SSH profile: username is required");
+  }
+  profile.port = parseInt(profile.port) || 22;
+  if (profile.port < 1 || profile.port > 65535) profile.port = 22;
   if (!profile.id) profile.id = crypto.randomUUID();
   const idx = (settings.sshProfiles || []).findIndex((p) => p.id === profile.id);
   if (idx >= 0) {
@@ -1710,6 +1746,7 @@ app.whenReady().then(() => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  clearInterval(idleCheckInterval);
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
   for (const [, s] of sshSessions) {
@@ -1718,6 +1755,11 @@ app.on("will-quit", () => {
     if (s.client) s.client.end();
   }
   sshSessions.clear();
+  // Reject all pending credential/host-verify promises
+  for (const [, p] of pendingCredentials) p.reject(new Error("App quitting"));
+  pendingCredentials.clear();
+  for (const [, p] of pendingHostVerify) p.resolve(false);
+  pendingHostVerify.clear();
 });
 
 app.on("window-all-closed", () => {
