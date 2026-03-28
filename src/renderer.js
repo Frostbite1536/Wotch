@@ -396,13 +396,20 @@ function closeTab(tabId) {
   renderTabBar();
 }
 
+let dragTabId = null;
+
 function renderTabBar() {
+  // Skip re-render during an active drag to avoid destroying drag state
+  if (dragTabId) return;
+
   // Remove old tab buttons (keep the + button)
   tabBar.querySelectorAll(".tab").forEach((el) => el.remove());
 
   tabs.forEach((tab) => {
     const btn = document.createElement("button");
     btn.className = "tab" + (tab.id === activeTabId ? " active" : "");
+    btn.draggable = true;
+    btn.dataset.tabId = tab.id;
     const tabState = tabStatuses[tab.id]?.state || "idle";
     btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${tab.name}<span class="tab-close" data-close="${tab.id}">✕</span>`;
     btn.addEventListener("click", (e) => {
@@ -412,6 +419,43 @@ function renderTabBar() {
         activateTab(tab.id);
       }
     });
+
+    // Drag-and-drop reordering
+    btn.addEventListener("dragstart", (e) => {
+      dragTabId = tab.id;
+      e.dataTransfer.effectAllowed = "move";
+      btn.style.opacity = "0.4";
+    });
+    btn.addEventListener("dragend", () => {
+      dragTabId = null;
+      btn.style.opacity = "";
+      tabBar.querySelectorAll(".tab.drag-over").forEach((el) => el.classList.remove("drag-over"));
+      // Re-render to pick up any status updates that were skipped during drag
+      renderTabBar();
+    });
+    btn.addEventListener("dragover", (e) => {
+      if (dragTabId && dragTabId !== tab.id) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        btn.classList.add("drag-over");
+      }
+    });
+    btn.addEventListener("dragleave", () => {
+      btn.classList.remove("drag-over");
+    });
+    btn.addEventListener("drop", (e) => {
+      e.preventDefault();
+      btn.classList.remove("drag-over");
+      if (!dragTabId || dragTabId === tab.id) return;
+      const fromIdx = tabs.findIndex((t) => t.id === dragTabId);
+      const toIdx = tabs.findIndex((t) => t.id === tab.id);
+      if (fromIdx === -1 || toIdx === -1) return;
+      const [moved] = tabs.splice(fromIdx, 1);
+      tabs.splice(toIdx, 0, moved);
+      dragTabId = null; // Clear before re-render so the guard doesn't block
+      renderTabBar();
+    });
+
     tabBar.insertBefore(btn, btnAddTab);
   });
 }

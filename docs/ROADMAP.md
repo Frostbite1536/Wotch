@@ -127,7 +127,7 @@
 - [ ] Plugin/extension system
 - [ ] Screen share protection mode (blur/hide terminal content)
 - [ ] Code signing for all platforms
-- [ ] Terminal tabs reordering via drag
+- [x] Terminal tabs reordering via drag
 - [ ] Custom keyboard shortcut bindings
 - [ ] Session persistence (restore tabs on restart)
 

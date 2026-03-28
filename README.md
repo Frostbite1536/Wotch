@@ -11,7 +11,7 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Notch-style pill** — small indicator at the top-center of your screen
 - **Hover to reveal** — mouse over the pill to expand the terminal panel
 - **Global hotkey** — `Ctrl+`` ` (or `⌘+`` ` on Mac) toggles the panel from anywhere
-- **Multi-tab terminals** — run multiple shell sessions side by side, with per-tab status dots
+- **Multi-tab terminals** — run multiple shell sessions side by side, with per-tab status dots and drag-to-reorder
 - **Real terminal** — full PowerShell/bash/zsh via node-pty + xterm.js
 - **Terminal search** — `Ctrl+F` to search terminal scrollback
 - **Command palette** — `Ctrl+Shift+P` for quick access to all commands

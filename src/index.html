@@ -157,6 +157,9 @@
     }
 
     .tab:hover { background: rgba(148, 163, 184, 0.08); }
+    .tab.drag-over { border-left: 2px solid var(--accent); }
+    .tab[draggable="true"] { cursor: grab; }
+    .tab[draggable="true"]:active { cursor: grabbing; }
     .tab.active {
       background: var(--accent-dim);
       color: var(--accent);
