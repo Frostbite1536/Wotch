@@ -71,6 +71,7 @@ const DEFAULT_SETTINGS = {
   theme: "dark",
   autoLaunchClaude: false,
   displayIndex: 0,           // 0 = primary display
+  position: "top",           // "top", "left", or "right"
 };
 
 function loadSettings() {
@@ -127,6 +128,26 @@ function getTopOffset() {
 function getPillBounds() {
   const display = getTargetDisplay();
   const screenW = display.workAreaSize.width;
+  const screenH = display.workAreaSize.height;
+  const pos = settings.position || "top";
+
+  if (pos === "left") {
+    return {
+      x: display.bounds.x,
+      y: display.bounds.y + Math.round((screenH - settings.pillWidth) / 2),
+      width: settings.pillHeight,
+      height: settings.pillWidth,
+    };
+  }
+  if (pos === "right") {
+    return {
+      x: display.bounds.x + screenW - settings.pillHeight,
+      y: display.bounds.y + Math.round((screenH - settings.pillWidth) / 2),
+      width: settings.pillHeight,
+      height: settings.pillWidth,
+    };
+  }
+  // "top" (default)
   const yOffset = getTopOffset();
   return {
     x: display.bounds.x + Math.round((screenW - settings.pillWidth) / 2),
@@ -139,6 +160,26 @@ function getPillBounds() {
 function getExpandedBounds() {
   const display = getTargetDisplay();
   const screenW = display.workAreaSize.width;
+  const screenH = display.workAreaSize.height;
+  const pos = settings.position || "top";
+
+  if (pos === "left") {
+    return {
+      x: display.bounds.x,
+      y: display.bounds.y + Math.round((screenH - settings.expandedHeight) / 2),
+      width: settings.expandedWidth,
+      height: settings.expandedHeight,
+    };
+  }
+  if (pos === "right") {
+    return {
+      x: display.bounds.x + screenW - settings.expandedWidth,
+      y: display.bounds.y + Math.round((screenH - settings.expandedHeight) / 2),
+      width: settings.expandedWidth,
+      height: settings.expandedHeight,
+    };
+  }
+  // "top" (default)
   const yOffset = getTopOffset();
   return {
     x: display.bounds.x + Math.round((screenW - settings.expandedWidth) / 2),
@@ -200,6 +241,7 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    mainWindow.webContents.send("position-changed", settings.position || "top");
     startMouseTracking();
   });
 
@@ -307,17 +349,39 @@ function startMouseTracking() {
     const winBounds = mainWindow.getBounds();
 
     // Check if mouse is within the window bounds + padding.
-    // On macOS without a notch, also trigger when the cursor hits the
-    // very top of the screen (above the pill but at the menu bar edge),
-    // so you can activate by slamming the mouse upward.
+    // Edge-slam: extend detection to screen edge for the position's anchor side.
     const pad = settings.hoverPadding;
-    const inZoneX =
-      mousePos.x >= winBounds.x - pad &&
-      mousePos.x <= winBounds.x + winBounds.width + pad;
+    const pos = settings.position || "top";
 
-    const inZoneY =
-      mousePos.y >= Math.max(0, winBounds.y - pad) &&
-      mousePos.y <= winBounds.y + winBounds.height + pad;
+    let inZoneX, inZoneY;
+
+    if (pos === "left") {
+      // Extend left edge to 0 for slam-to-left activation
+      inZoneX =
+        mousePos.x >= 0 &&
+        mousePos.x <= winBounds.x + winBounds.width + pad;
+      inZoneY =
+        mousePos.y >= winBounds.y - pad &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    } else if (pos === "right") {
+      // Extend right edge to screen edge for slam-to-right activation
+      const display = getTargetDisplay();
+      const screenRight = display.bounds.x + display.workAreaSize.width;
+      inZoneX =
+        mousePos.x >= winBounds.x - pad &&
+        mousePos.x <= screenRight;
+      inZoneY =
+        mousePos.y >= winBounds.y - pad &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    } else {
+      // "top" — extend to top of screen for slam-up activation
+      inZoneX =
+        mousePos.x >= winBounds.x - pad &&
+        mousePos.x <= winBounds.x + winBounds.width + pad;
+      inZoneY =
+        mousePos.y >= Math.max(0, winBounds.y - pad) &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    }
 
     const inZone = inZoneX && inZoneY;
 
@@ -1202,8 +1266,15 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
   Object.assign(settings, newSettings);
   const ok = saveSettings(settings);
 
+  const positionChanged = prev.position !== settings.position;
+
+  // If position changed, reposition the window and notify renderer
+  if (positionChanged && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+    mainWindow.webContents.send("position-changed", settings.position || "top");
+  }
   // If dimensions changed and we're expanded, re-apply bounds
-  if (isExpanded && mainWindow && (
+  else if (isExpanded && mainWindow && (
     prev.expandedWidth !== settings.expandedWidth ||
     prev.expandedHeight !== settings.expandedHeight
   )) {
@@ -1217,10 +1288,11 @@ ipcMain.handle("reset-settings", () => {
   settings = { ...DEFAULT_SETTINGS };
   saveSettings(settings);
   isPinned = false;
-  if (isExpanded && mainWindow) {
-    mainWindow.setBounds(getExpandedBounds(), true);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+    mainWindow.webContents.send("pin-state", false);
+    mainWindow.webContents.send("position-changed", settings.position || "top");
   }
-  mainWindow.webContents.send("pin-state", false);
   return { ...settings };
 });
 
@@ -1258,10 +1330,17 @@ ipcMain.handle("get-displays", () => {
 });
 
 // Window resize (from drag handle)
-ipcMain.on("resize-window", (_event, height) => {
+ipcMain.on("resize-window", (_event, size) => {
   if (!mainWindow || !isExpanded) return;
-  const clamped = Math.max(200, Math.min(900, height));
-  settings.expandedHeight = clamped;
+  const pos = settings.position || "top";
+  if (pos === "left" || pos === "right") {
+    // For side positions, drag handle adjusts width
+    const clamped = Math.max(400, Math.min(1200, size));
+    settings.expandedWidth = clamped;
+  } else {
+    const clamped = Math.max(200, Math.min(900, size));
+    settings.expandedHeight = clamped;
+  }
   const bounds = getExpandedBounds();
   mainWindow.setBounds(bounds, false);
   saveSettings(settings);

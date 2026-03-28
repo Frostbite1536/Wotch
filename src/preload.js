@@ -67,5 +67,10 @@ contextBridge.exposeInMainWorld("wotch", {
   getDisplays: () => ipcRenderer.invoke("get-displays"),
 
   // Window resize
-  resizeWindow: (height) => ipcRenderer.send("resize-window", height),
+  resizeWindow: (size) => ipcRenderer.send("resize-window", size),
+
+  // Position changes
+  onPositionChanged: (callback) => {
+    ipcRenderer.on("position-changed", (_e, position) => callback(position));
+  },
 });

@@ -629,6 +629,16 @@ window.wotch.onPinState((pinned) => {
   updatePinButton();
 });
 
+// ── Position handling ──────────────────────────────────
+function applyPosition(position) {
+  document.body.classList.remove("position-top", "position-left", "position-right");
+  document.body.classList.add(`position-${position || "top"}`);
+}
+
+window.wotch.onPositionChanged((position) => {
+  applyPosition(position);
+});
+
 // ── Settings UI ────────────────────────────────────────
 const settingsOverlay = document.getElementById("settings-overlay");
 const btnSettings = document.getElementById("btn-settings");
@@ -647,6 +657,7 @@ const setDefaultShell = document.getElementById("set-default-shell");
 const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
 const setDisplay = document.getElementById("set-display");
+const setPosition = document.getElementById("set-position");
 
 function openSettings() {
   settingsOpen = true;
@@ -675,6 +686,7 @@ async function loadSettingsUI() {
     setDefaultShell.value = s.defaultShell || "";
     if (setTheme) setTheme.value = s.theme || "dark";
     if (setAutoLaunchClaude) setAutoLaunchClaude.classList.toggle("on", s.autoLaunchClaude || false);
+    if (setPosition) setPosition.value = s.position || "top";
     // Populate display selector
     if (setDisplay) {
       try {
@@ -705,6 +717,7 @@ function debouncedSave() {
       theme: setTheme ? setTheme.value : "dark",
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
+      position: setPosition ? setPosition.value : "top",
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -738,6 +751,9 @@ if (setAutoLaunchClaude) {
 }
 if (setDisplay) {
   setDisplay.addEventListener("change", debouncedSave);
+}
+if (setPosition) {
+  setPosition.addEventListener("change", debouncedSave);
 }
 
 btnSettings.addEventListener("click", (e) => {
@@ -839,27 +855,45 @@ document.getElementById("btn-diff")?.addEventListener("click", () => showDiff("l
 const resizeHandle = document.getElementById("resize-handle");
 let resizing = false;
 let resizeStartY = 0;
+let resizeStartX = 0;
 let resizeStartHeight = 0;
+let resizeStartWidth = 0;
 
 resizeHandle.addEventListener("mousedown", (e) => {
   resizing = true;
   resizeStartY = e.screenY;
+  resizeStartX = e.screenX;
   resizeStartHeight = document.body.offsetHeight;
+  resizeStartWidth = document.body.offsetWidth;
   e.preventDefault();
 });
 
 document.addEventListener("mousemove", (e) => {
   if (!resizing) return;
-  const delta = e.screenY - resizeStartY;
-  const newHeight = resizeStartHeight + delta;
-  window.wotch.resizeWindow(newHeight);
+  const pos = document.body.classList.contains("position-left") ? "left"
+    : document.body.classList.contains("position-right") ? "right" : "top";
+  if (pos === "left") {
+    const delta = e.screenX - resizeStartX;
+    window.wotch.resizeWindow(resizeStartWidth + delta);
+  } else if (pos === "right") {
+    const delta = resizeStartX - e.screenX;
+    window.wotch.resizeWindow(resizeStartWidth + delta);
+  } else {
+    const delta = e.screenY - resizeStartY;
+    window.wotch.resizeWindow(resizeStartHeight + delta);
+  }
 });
 
 document.addEventListener("mouseup", () => {
   if (resizing) {
     resizing = false;
-    const h = document.body.offsetHeight;
-    window.wotch.saveSettings({ expandedHeight: h });
+    const pos = document.body.classList.contains("position-left") ? "left"
+      : document.body.classList.contains("position-right") ? "right" : "top";
+    if (pos === "left" || pos === "right") {
+      window.wotch.saveSettings({ expandedWidth: document.body.offsetWidth });
+    } else {
+      window.wotch.saveSettings({ expandedHeight: document.body.offsetHeight });
+    }
     tabs.forEach((t) => t.fitAddon.fit());
   }
 });
@@ -944,6 +978,7 @@ paletteList.addEventListener("click", (e) => {
   try {
     const initSettings = await window.wotch.getSettings();
     if (initSettings.theme) applyTheme(initSettings.theme);
+    applyPosition(initSettings.position);
   } catch { /* ignore */ }
 
   // Check platform and adapt UI accordingly
