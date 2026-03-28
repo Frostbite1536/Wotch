@@ -1,0 +1,608 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000010000000000000001 /* WotchMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001; };
+		A10000020000000000000001 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000020000000000000001; };
+		A10000030000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000030000000000000001; };
+		A10000040000000000000001 /* SSHProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000040000000000000001; };
+		A10000050000000000000001 /* ClaudeStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000050000000000000001; };
+		A10000060000000000000001 /* ConnectionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000060000000000000001; };
+		A10000070000000000000001 /* WotchTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000070000000000000001; };
+		A10000080000000000000001 /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000080000000000000001; };
+		A10000090000000000000001 /* ClaudeStatusDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000090000000000000001; };
+		A10000100000000000000001 /* SettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000100000000000000001; };
+		A10000110000000000000001 /* KnownHostsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000110000000000000001; };
+		A10000120000000000000001 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000120000000000000001; };
+		A10000130000000000000001 /* WidgetDataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000130000000000000001; };
+		A10000140000000000000001 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000140000000000000001; };
+		A10000150000000000000001 /* ConnectionListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000150000000000000001; };
+		A10000160000000000000001 /* ProfileEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000160000000000000001; };
+		A10000170000000000000001 /* ConnectionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000170000000000000001; };
+		A10000180000000000000001 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000180000000000000001; };
+		A10000190000000000000001 /* ProfileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000190000000000000001; };
+		A10000200000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000200000000000000001; };
+		A10000210000000000000001 /* StatusDotView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000210000000000000001; };
+		A10000220000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000220000000000000001; };
+		A10000300000000000000001 /* WotchWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000300000000000000001; };
+		A10000310000000000000001 /* ClaudeStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000050000000000000001; };
+		A10000320000000000000001 /* WidgetDataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000130000000000000001; };
+		A10000330000000000000001 /* WotchTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000070000000000000001; };
+		A10000400000000000000001 /* WotchWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A30000020000000000000001; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A40000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A50000010000000000000001;
+			proxyType = 1;
+			remoteGlobalIDString = A30000010000000000000002;
+			remoteInfo = WotchWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A60000010000000000000001 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000400000000000000001 /* WotchWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A20000010000000000000001 /* WotchMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WotchMobileApp.swift; sourceTree = "<group>"; };
+		A20000020000000000000001 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A20000030000000000000001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A20000040000000000000001 /* SSHProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHProfile.swift; sourceTree = "<group>"; };
+		A20000050000000000000001 /* ClaudeStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStatus.swift; sourceTree = "<group>"; };
+		A20000060000000000000001 /* ConnectionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionState.swift; sourceTree = "<group>"; };
+		A20000070000000000000001 /* WotchTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WotchTheme.swift; sourceTree = "<group>"; };
+		A20000080000000000000001 /* SSHService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHService.swift; sourceTree = "<group>"; };
+		A20000090000000000000001 /* ClaudeStatusDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStatusDetector.swift; sourceTree = "<group>"; };
+		A20000100000000000000001 /* SettingsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsService.swift; sourceTree = "<group>"; };
+		A20000110000000000000001 /* KnownHostsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnownHostsService.swift; sourceTree = "<group>"; };
+		A20000120000000000000001 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
+		A20000130000000000000001 /* WidgetDataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetDataService.swift; sourceTree = "<group>"; };
+		A20000140000000000000001 /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
+		A20000150000000000000001 /* ConnectionListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionListViewModel.swift; sourceTree = "<group>"; };
+		A20000160000000000000001 /* ProfileEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorViewModel.swift; sourceTree = "<group>"; };
+		A20000170000000000000001 /* ConnectionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionListView.swift; sourceTree = "<group>"; };
+		A20000180000000000000001 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
+		A20000190000000000000001 /* ProfileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorView.swift; sourceTree = "<group>"; };
+		A20000200000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A20000210000000000000001 /* StatusDotView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusDotView.swift; sourceTree = "<group>"; };
+		A20000220000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A20000230000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000240000000000000001 /* WotchMobile.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WotchMobile.entitlements; sourceTree = "<group>"; };
+		A20000300000000000000001 /* WotchWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WotchWidget.swift; sourceTree = "<group>"; };
+		A20000310000000000000001 /* WotchWidgetInfo.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = WotchWidgetInfo.plist; sourceTree = "<group>"; };
+		A20000320000000000000001 /* WotchWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WotchWidget.entitlements; sourceTree = "<group>"; };
+		A30000010000000000000001 /* WotchMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WotchMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A30000020000000000000001 /* WotchWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WotchWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A70000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A70000020000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A80000010000000000000001 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				A80000020000000000000001 /* WotchMobile */,
+				A80000070000000000000001 /* WotchWidget */,
+				A80000080000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A80000020000000000000001 /* WotchMobile */ = {
+			isa = PBXGroup;
+			children = (
+				A80000030000000000000001 /* App */,
+				A80000040000000000000001 /* Models */,
+				A80000050000000000000001 /* Services */,
+				A80000060000000000000001 /* ViewModels */,
+				A80000090000000000000001 /* Views */,
+				A20000220000000000000001 /* Assets.xcassets */,
+				A20000230000000000000001 /* Info.plist */,
+				A20000240000000000000001 /* WotchMobile.entitlements */,
+			);
+			path = WotchMobile;
+			sourceTree = "<group>";
+		};
+		A80000030000000000000001 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000001 /* WotchMobileApp.swift */,
+				A20000020000000000000001 /* AppState.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A80000040000000000000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A20000040000000000000001 /* SSHProfile.swift */,
+				A20000050000000000000001 /* ClaudeStatus.swift */,
+				A20000060000000000000001 /* ConnectionState.swift */,
+				A20000070000000000000001 /* WotchTheme.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A80000050000000000000001 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A20000080000000000000001 /* SSHService.swift */,
+				A20000090000000000000001 /* ClaudeStatusDetector.swift */,
+				A20000100000000000000001 /* SettingsService.swift */,
+				A20000110000000000000001 /* KnownHostsService.swift */,
+				A20000120000000000000001 /* KeychainService.swift */,
+				A20000130000000000000001 /* WidgetDataService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A80000060000000000000001 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A20000140000000000000001 /* TerminalViewModel.swift */,
+				A20000150000000000000001 /* ConnectionListViewModel.swift */,
+				A20000160000000000000001 /* ProfileEditorViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A80000070000000000000001 /* WotchWidget */ = {
+			isa = PBXGroup;
+			children = (
+				A20000300000000000000001 /* WotchWidget.swift */,
+				A20000310000000000000001 /* WotchWidgetInfo.plist */,
+				A20000320000000000000001 /* WotchWidget.entitlements */,
+			);
+			path = WotchWidget;
+			sourceTree = "<group>";
+		};
+		A80000080000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A30000010000000000000001 /* WotchMobile.app */,
+				A30000020000000000000001 /* WotchWidgetExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A80000090000000000000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000030000000000000001 /* ContentView.swift */,
+				A20000170000000000000001 /* ConnectionListView.swift */,
+				A20000180000000000000001 /* TerminalView.swift */,
+				A20000190000000000000001 /* ProfileEditorView.swift */,
+				A20000200000000000000001 /* SettingsView.swift */,
+				A20000210000000000000001 /* StatusDotView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A30000010000000000000001 /* WotchMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000010000000000000001;
+			buildPhases = (
+				AA0000010000000000000001 /* Sources */,
+				A70000010000000000000001 /* Frameworks */,
+				AB0000010000000000000001 /* Resources */,
+				A60000010000000000000001 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AC0000010000000000000001 /* PBXTargetDependency */,
+			);
+			name = WotchMobile;
+			productName = WotchMobile;
+			productReference = A30000010000000000000001 /* WotchMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A30000010000000000000002 /* WotchWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000020000000000000001;
+			buildPhases = (
+				AA0000020000000000000001 /* Sources */,
+				A70000020000000000000001 /* Frameworks */,
+				AB0000020000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WotchWidgetExtension;
+			productName = WotchWidgetExtension;
+			productReference = A30000020000000000000001 /* WotchWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A50000010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1540;
+				LastUpgradeCheck = 1540;
+				TargetAttributes = {
+					A30000010000000000000001 = {
+						CreatedOnToolsVersion = 15.4;
+					};
+					A30000010000000000000002 = {
+						CreatedOnToolsVersion = 15.4;
+					};
+				};
+			};
+			buildConfigurationList = A90000030000000000000001;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A80000010000000000000001;
+			productRefGroup = A80000080000000000000001;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A30000010000000000000001 /* WotchMobile */,
+				A30000010000000000000002 /* WotchWidgetExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AB0000010000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000220000000000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB0000020000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000001 /* WotchMobileApp.swift in Sources */,
+				A10000020000000000000001 /* AppState.swift in Sources */,
+				A10000030000000000000001 /* ContentView.swift in Sources */,
+				A10000040000000000000001 /* SSHProfile.swift in Sources */,
+				A10000050000000000000001 /* ClaudeStatus.swift in Sources */,
+				A10000060000000000000001 /* ConnectionState.swift in Sources */,
+				A10000070000000000000001 /* WotchTheme.swift in Sources */,
+				A10000080000000000000001 /* SSHService.swift in Sources */,
+				A10000090000000000000001 /* ClaudeStatusDetector.swift in Sources */,
+				A10000100000000000000001 /* SettingsService.swift in Sources */,
+				A10000110000000000000001 /* KnownHostsService.swift in Sources */,
+				A10000120000000000000001 /* KeychainService.swift in Sources */,
+				A10000130000000000000001 /* WidgetDataService.swift in Sources */,
+				A10000140000000000000001 /* TerminalViewModel.swift in Sources */,
+				A10000150000000000000001 /* ConnectionListViewModel.swift in Sources */,
+				A10000160000000000000001 /* ProfileEditorViewModel.swift in Sources */,
+				A10000170000000000000001 /* ConnectionListView.swift in Sources */,
+				A10000180000000000000001 /* TerminalView.swift in Sources */,
+				A10000190000000000000001 /* ProfileEditorView.swift in Sources */,
+				A10000200000000000000001 /* SettingsView.swift in Sources */,
+				A10000210000000000000001 /* StatusDotView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000020000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000300000000000000001 /* WotchWidget.swift in Sources */,
+				A10000310000000000000001 /* ClaudeStatus.swift in Sources */,
+				A10000320000000000000001 /* WidgetDataService.swift in Sources */,
+				A10000330000000000000001 /* WotchTheme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AC0000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A30000010000000000000002;
+			targetProxy = A40000010000000000000001;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AD0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AD0000020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AE0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WotchMobile/WotchMobile.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WotchMobile/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Wotch;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wotch.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AE0000020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WotchMobile/WotchMobile.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WotchMobile/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Wotch;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wotch.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AF0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WotchWidget/WotchWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WotchWidget/WotchWidgetInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Wotch Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wotch.mobile.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AF0000020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WotchWidget/WotchWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WotchWidget/WotchWidgetInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Wotch Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wotch.mobile.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A90000010000000000000001 /* Build configuration list for PBXNativeTarget "WotchMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AE0000010000000000000001 /* Debug */,
+				AE0000020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000020000000000000001 /* Build configuration list for PBXNativeTarget "WotchWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AF0000010000000000000001 /* Debug */,
+				AF0000020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000030000000000000001 /* Build configuration list for PBXProject "WotchMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000010000000000000001 /* Debug */,
+				AD0000020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A50000010000000000000001 /* Project object */;
+}
