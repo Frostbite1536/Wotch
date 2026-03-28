@@ -96,6 +96,31 @@ npm run dist
 
 This creates an installer in the `dist/` folder using electron-builder.
 
+## Project Structure
+
+```
+wotch/
+├── src/
+│   ├── main.js          # Electron main process (window, PTY, hotkey, status, git)
+│   ├── preload.js       # Secure IPC bridge (contextBridge)
+│   └── index.html       # Renderer (terminal UI, tabs, settings, pill)
+├── docs/
+│   ├── ARCHITECTURE.md  # Component diagram, data flow, design decisions
+│   ├── INVARIANTS.md    # Non-negotiable rules (security, data, UX, platform)
+│   ├── ROADMAP.md       # Phased plan with status and future ideas
+│   ├── THREAT_MODEL.md  # STRIDE analysis, attack surface, mitigations
+│   └── DECISIONS.md     # Architectural decision log
+├── prompts/
+│   └── engineering.md   # Default coding prompt for AI-assisted development
+├── .github/
+│   └── workflows/
+│       └── build.yml    # GitHub Actions: build .exe on version tag push
+├── CHECKLIST.md         # Pre-merge checklist
+├── package.json
+├── .gitignore
+└── README.md
+```
+
 ## How it works
 
 ```
@@ -227,6 +252,23 @@ Everything works out of the box — hover-to-reveal, always-on-top, global hotke
 
 **VS Code detection on Linux:**
 Wotch checks for VS Code, Code-OSS, and VSCodium config paths, including Flatpak and Snap installs.
+
+## Documentation
+
+- **[Architecture](docs/ARCHITECTURE.md)** — Components, data flow, design decisions, dependency rationale
+- **[Invariants](docs/INVARIANTS.md)** — Non-negotiable rules for security, data integrity, UX, and cross-platform behavior
+- **[Roadmap](docs/ROADMAP.md)** — Phased plan with current status and future ideas
+- **[Threat Model](docs/THREAT_MODEL.md)** — STRIDE analysis, attack surface, trust boundaries, mitigations
+- **[Decisions](docs/DECISIONS.md)** — Architectural decision log with context and trade-offs
+- **[Checklist](CHECKLIST.md)** — Pre-merge checklist for code review
+- **[Engineering Prompt](prompts/engineering.md)** — Default prompt for AI-assisted development on this project
+
+## Contributing
+
+Before making changes, read:
+1. `docs/ARCHITECTURE.md` to understand how the pieces fit together
+2. `docs/INVARIANTS.md` to know what rules cannot be broken
+3. `CHECKLIST.md` before submitting a PR
 
 ## License
 
