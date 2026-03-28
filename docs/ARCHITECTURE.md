@@ -98,7 +98,7 @@ Secure IPC bridge using `contextBridge.exposeInMainWorld`. Exposes the `window.w
 
 HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). Contains:
 - **Pill UI**: Status dot (color-coded by Claude state), label, dropdown arrow
-- **Tab bar**: Create/switch/close terminal tabs with per-tab status dots
+- **Tab bar**: Create/switch/close/reorder terminal tabs with per-tab status dots (drag-to-reorder)
 - **xterm.js terminals**: Full terminal emulation with fit, search, and web-links addons
 - **Terminal search**: Ctrl+F search overlay with prev/next navigation
 - **Project picker**: Dropdown of detected projects (VS Code, JetBrains, Xcode, Visual Studio, filesystem scan)

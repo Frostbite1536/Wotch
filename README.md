@@ -29,21 +29,45 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Auto-update** — checks GitHub Releases for new versions
 - **System tray** — right-click tray icon to toggle or quit
 
-## Requirements
+## Install
 
-- Windows 10/11, macOS 10.15+, or Linux (X11 or Wayland)
+Download the latest release for your platform from [GitHub Releases](https://github.com/Frostbite1536/Wotch/releases):
+
+- **Windows** — `.exe` installer
+- **macOS** — `.dmg` disk image
+- **Linux** — `.AppImage` or `.deb` package
+
+No Node.js or build tools required.
+
+## Quick Start
+
+1. **Launch Wotch** — a small pill appears at the top-center of your screen
+2. **Hover the pill** (or press `Ctrl+`` `) — the terminal panel slides open
+3. **Open a project** — click the project dropdown to auto-detect your VS Code/JetBrains projects
+4. **Create a checkpoint** — press `Ctrl+S` before letting Claude make changes
+5. **Let Claude work** — the pill dot changes color to show Claude's status in real-time
+6. **View the diff** — click "Diff" in the git bar to see what changed
+7. **Roll back if needed** — `git reset --hard <checkpoint-hash>` to undo
+
+**Tips:**
+- Press `Ctrl+Shift+P` to open the command palette for quick access to all actions
+- Press `Ctrl+F` to search terminal output
+- Drag tabs to reorder them
+- Drag the bottom edge of the panel to resize it
+- Click 📌 to pin the panel open while you work in other windows
+- Right-click the system tray icon to toggle or quit
+
+## Development Setup
+
+If you want to build from source:
+
+### Requirements
 - Node.js 18+
-- Build tools for native module compilation (see setup below)
+- C++ build tools for native module compilation (node-pty)
 
-## Setup
+### 1. Install build tools (one-time)
 
-### 1. Install build tools (one-time, for node-pty native compilation)
-
-**Windows:**
-```bash
-npm install -g windows-build-tools
-```
-Or install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) manually.
+**Windows:** Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload.
 
 **Ubuntu / Debian:**
 ```bash
@@ -65,22 +89,11 @@ sudo pacman -S base-devel python libx11 libxkbfile
 xcode-select --install
 ```
 
-### 2. Install dependencies
+### 2. Install and run
 
 ```bash
 cd wotch
 npm install
-```
-
-### 3. Rebuild native modules for Electron
-
-```bash
-npm run rebuild
-```
-
-### 4. Run
-
-```bash
 npm start
 ```
 
@@ -102,10 +115,18 @@ npm start
 ## Building a distributable
 
 ```bash
-npm run dist
+npm run dist          # current platform
+npm run dist:win      # Windows .exe
+npm run dist:mac      # macOS .dmg
+npm run dist:linux    # Linux .AppImage + .deb
 ```
 
-This creates an installer in the `dist/` folder using electron-builder.
+This creates an installer in the `dist/` folder. Or push a version tag to build all platforms via GitHub Actions:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
 
 ## Project Structure
 
@@ -161,9 +182,10 @@ wotch/
 
 ### Architecture
 
-- **main.js** — Electron main process: frameless always-on-top window, mouse polling for hover detection, global hotkey, PTY process management, Claude Code status detection, project scanning, git operations
-- **preload.js** — secure IPC bridge between main and renderer
-- **index.html** — renderer with xterm.js terminals, tab management, project picker, git status bar, live status display, and the notch UI
+- **main.js** — Electron main process: window management, PTY processes, mouse tracking, global hotkey, Claude status detection, project scanning, git operations, auto-updater, system notifications, multi-monitor display management
+- **preload.js** — secure IPC bridge (24 methods) between main and renderer
+- **index.html** — renderer HTML and CSS: pill, panel, overlays, settings panel
+- **renderer.js** — renderer JavaScript: tab management, themes, terminal search, command palette, diff viewer, drag-to-resize, drag-to-reorder tabs, settings wiring
 
 ## Live Claude Code Status
 
@@ -218,9 +240,13 @@ The "Remember pin state" toggle in settings persists the pin across restarts.
 
 Click the ⚙ gear in the bottom-right corner to open the settings panel. All changes save automatically to `~/.wotch/settings.json`.
 
-**Panel Dimensions:** expanded width/height, pill width — resize the panel to your liking.
+**Appearance:** theme (dark, light, purple, green) — changes colors for the entire app including terminals.
 
-**Behavior:** collapse delay (how long before the panel closes on mouse leave), hover padding (how far from the pill the hover zone extends), start expanded (open panel on launch), remember pin state (persist pin across restarts).
+**Panel Dimensions:** expanded width/height, pill width — resize the panel to your liking. You can also drag the bottom edge of the panel to resize live.
+
+**Behavior:** collapse delay (how long before the panel closes on mouse leave), hover padding (how far from the pill the hover zone extends), start expanded (open panel on launch), remember pin state (persist pin across restarts), auto-launch Claude (type `claude` in every new tab).
+
+**Display:** target display — choose which monitor to show the pill on (for multi-monitor setups).
 
 **Shell:** override the default shell (leave empty for auto-detect: PowerShell on Windows, zsh on macOS, bash on Linux).
 

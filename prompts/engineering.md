@@ -45,6 +45,7 @@ You are working on **Wotch**, a cross-platform Electron desktop app that provide
 - **Themes:** New CSS colors must be added to all 4 theme presets. Terminal themes (xterm.js) are separate from CSS vars — update `getTermTheme()` and `applyTheme()`.
 - **Multi-monitor:** Positioning uses `getTargetDisplay()` not `screen.getPrimaryDisplay()`. Always add `display.bounds.x/y` offsets.
 - **Settings:** New settings need: default in `DEFAULT_SETTINGS` (main.js), UI element in index.html, wiring in renderer.js (`loadSettingsUI`, `debouncedSave`, event listener).
+- **Tab bar re-renders:** `renderTabBar()` is called frequently (on status updates, tab changes). It skips re-render when `dragTabId` is set to avoid interrupting drag-to-reorder. If you add new callers of `renderTabBar()`, this guard still protects you.
 
 ## Security Rules (Non-Negotiable)
 - `contextIsolation: true` and `nodeIntegration: false` — always.

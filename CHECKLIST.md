@@ -43,6 +43,7 @@ Use this before merging any PR or accepting any AI-generated change.
 - [ ] Themes switch correctly (all 4 presets)
 - [ ] Diff viewer shows color-coded output
 - [ ] Drag-to-resize works and persists
+- [ ] Drag-to-reorder tabs works without interruption from status updates
 
 ## Git
 - [ ] Commit messages are descriptive
