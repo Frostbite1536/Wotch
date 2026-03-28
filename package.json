@@ -2,6 +2,7 @@
   "name": "wotch",
   "version": "1.0.0",
   "description": "Wotch — the notch, for those without. A floating terminal for Claude Code (Windows, Linux, macOS)",
+  "author": "Frostbite1536 <frostbite1536@users.noreply.github.com>",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
