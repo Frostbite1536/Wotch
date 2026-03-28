@@ -25,9 +25,10 @@ Use this before merging any PR or accepting any AI-generated change.
 ## Code Quality
 - [ ] No unnecessary new dependencies
 - [ ] No new build tooling added to the renderer
-- [ ] Files stay under ~1,500 lines
-- [ ] New IPC channels added to both main.js AND preload.js
+- [ ] Files stay under ~1,500 lines (index.html, renderer.js, main.js)
+- [ ] New IPC channels added to main.js AND preload.js AND renderer.js
 - [ ] Settings changes are backward-compatible (old settings.json still works)
+- [ ] New CSS colors added to all 4 theme presets in renderer.js
 
 ## Functional
 - [ ] App launches and pill is visible
@@ -37,6 +38,11 @@ Use this before merging any PR or accepting any AI-generated change.
 - [ ] Settings panel opens and saves
 - [ ] Git checkpoint works on a git repo
 - [ ] Claude status detection not regressed (if applicable)
+- [ ] Terminal search (Ctrl+F) finds text in scrollback
+- [ ] Command palette (Ctrl+Shift+P) opens and executes commands
+- [ ] Themes switch correctly (all 4 presets)
+- [ ] Diff viewer shows color-coded output
+- [ ] Drag-to-resize works and persists
 
 ## Git
 - [ ] Commit messages are descriptive

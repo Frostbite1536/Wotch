@@ -73,48 +73,63 @@
 
 ---
 
-## Phase 5: Distribution & Install
-**Status:** In Progress
+## Phase 5: Distribution & Install (Complete)
+**Status:** Done
 **Goal:** Users can install Wotch without build tools.
 
 ### Features
 - [x] GitHub Actions workflow for Windows .exe build
-- [ ] GitHub Actions for macOS .dmg and Linux .AppImage/.deb
-- [ ] Auto-update mechanism (electron-updater)
-- [ ] Signed builds (Windows code signing, macOS notarization)
-- [ ] GitHub Releases with release notes
+- [x] GitHub Actions for macOS .dmg and Linux .AppImage/.deb
+- [x] Auto-update mechanism (electron-updater)
+- [x] GitHub Releases with release notes
+- [ ] Signed builds (Windows code signing, macOS notarization) — deferred, requires paid certificates
 
 ### Exclusions
 - No app store distribution (yet)
+- No code signing yet ($99/year Apple, varies for Windows)
 
 ### Success Criteria
 - Users can download and run a single installer on any supported platform
 - No Node.js or build tools required to use Wotch
 
-### Risks
-- Code signing requires certificates ($99/year for Apple, varies for Windows)
-- Auto-update adds complexity and a server dependency
+---
+
+## Phase 6: Quality of Life (Complete)
+**Status:** Done
+**Goal:** Quality of life improvements.
+
+### Features
+- [x] Themes / custom pill colors (dark, light, purple, green)
+- [x] Multiple monitor support (display selector in settings)
+- [x] Terminal search (Ctrl+F) via @xterm/addon-search
+- [x] Drag to resize expanded panel (bottom edge handle)
+- [x] Notification when Claude finishes (Electron Notification API)
+- [x] Command palette (Ctrl+Shift+P)
+- [x] Checkpoint diff viewer (color-coded git diff overlay)
+- [x] Claude Code auto-launch in new tabs (optional setting)
+
+### Deferred
+- [ ] Split panes within a tab — high complexity, deferred until simpler features are stable
+- [ ] Plugin/extension system — significant security implications, deferred indefinitely
+
+### Success Criteria
+- All features accessible via keyboard shortcuts or settings UI
+- No regressions to core terminal functionality
 
 ---
 
-## Phase 6: Future Ideas
+## Phase 7: Future Ideas
 **Status:** Not Started
-**Goal:** Quality of life improvements based on usage feedback.
+**Goal:** Next round of improvements based on usage feedback.
 
 ### Candidates (unprioritized)
-- [ ] Themes / custom pill colors
-- [ ] Multiple monitor support (pill on each display)
-- [ ] Terminal search (Ctrl+F)
 - [ ] Split panes within a tab
-- [ ] Drag to resize expanded panel
-- [ ] Notification when Claude finishes (system toast)
-- [ ] Command palette
 - [ ] Plugin/extension system
-- [ ] Checkpoint diff viewer (see what changed since last checkpoint)
-- [ ] Claude Code auto-launch in new tabs
-
-### Decision Criteria
-Features will be prioritized based on user feedback and alignment with the core value proposition: a lightweight, always-visible terminal for Claude Code.
+- [ ] Screen share protection mode (blur/hide terminal content)
+- [ ] Code signing for all platforms
+- [ ] Terminal tabs reordering via drag
+- [ ] Custom keyboard shortcut bindings
+- [ ] Session persistence (restore tabs on restart)
 
 ---
 
@@ -124,3 +139,7 @@ Features will be prioritized based on user feedback and alignment with the core 
 |------|----------|--------|
 | 2026-03-28 | Use GitHub Actions for builds instead of requiring local build tools | Most users don't have Visual Studio Build Tools installed; cloud builds are more reliable |
 | 2026-03-28 | Single `index.html` for renderer instead of a build system | Keeps the project simple; the UI is small enough that a bundler adds more complexity than value |
+| 2026-03-28 | Extract renderer JS into `src/renderer.js` | index.html exceeded 1,500 lines after Phase 6 features; split to maintain readability |
+| 2026-03-28 | Use CSS custom properties for theming | Allows runtime theme switching without rebuilding; themes are just variable maps |
+| 2026-03-28 | Defer split panes and plugin system | Split panes require pane tree data structure and focus tracking (~4hr effort); plugins have security implications (main process access) |
+| 2026-03-28 | Use `execFileSync` for git commit instead of `execSync` | Prevents shell injection via checkpoint messages (INV-SEC-004) |

@@ -65,11 +65,11 @@ The Wotch window must always remain above other windows. If the OS or window man
 **Enforcement:** Re-assert in the `blur` event handler.
 
 ### INV-UX-002: Pill Must Always Be Visible
-The pill must always be visible and positioned at the top-center of the primary display. It must never be moved off-screen, hidden behind other elements, or become unclickable.
+The pill must always be visible and positioned at the top-center of the target display (primary by default, configurable via `displayIndex`). It must never be moved off-screen, hidden behind other elements, or become unclickable. If the target display is disconnected, the pill must fall back to the primary display.
 
 **Rationale:** If the user can't see or reach the pill, they can't use Wotch.
 
-**Enforcement:** Position calculation uses `screen.getPrimaryDisplay()` at runtime.
+**Enforcement:** Position calculation uses `getTargetDisplay()` which falls back to `screen.getPrimaryDisplay()`. `display-removed` event handler resets `displayIndex` and repositions.
 
 ### INV-UX-003: Pin Prevents Hover Collapse
 When pinned (`isPinned === true`), the panel must not collapse due to mouse leaving the hover zone. Only the toggle hotkey or explicit unpin should collapse a pinned panel.
@@ -106,3 +106,5 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 | Date | Invariant | Change | Reason |
 |------|-----------|--------|--------|
 | 2026-03-28 | All | Initial creation | Project documentation setup |
+| 2026-03-28 | INV-SEC-004 | Git commit now uses execFileSync with args array | Eliminates shell injection in checkpoint messages |
+| 2026-03-28 | INV-UX-002 | Updated for multi-monitor support | Pill can now target any display, falls back to primary on disconnect |

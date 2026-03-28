@@ -39,19 +39,25 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 │          contextBridge.exposeInMainWorld             │
 ├──────────────────────────────────────────────────────┤
 │                Renderer Process                      │
-│                  (index.html)                        │
+│           (index.html + renderer.js)                 │
 │                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 │  │ Pill UI  │  │ Tab Mgr  │  │ Settings Panel    │  │
 │  │          │  │          │  │                   │  │
-│  │ - dot    │  │ - create │  │ - dimensions      │  │
-│  │ - label  │  │ - switch │  │ - behavior        │  │
-│  │ - badge  │  │ - close  │  │ - shell           │  │
+│  │ - dot    │  │ - create │  │ - appearance      │  │
+│  │ - label  │  │ - switch │  │ - dimensions      │  │
+│  │ - badge  │  │ - close  │  │ - behavior/shell  │  │
 │  └──────────┘  └──────────┘  └───────────────────┘  │
 │                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 │  │ xterm.js │  │ Project  │  │ Git Status Bar    │  │
-│  │ Terminal │  │ Picker   │  │                   │  │
+│  │ Terminal │  │ Picker   │  │ + Diff Viewer     │  │
+│  │ + Search │  │          │  │                   │  │
+│  └──────────┘  └──────────┘  └───────────────────┘  │
+│                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
+│  │ Themes   │  │ Command  │  │ Drag Resize       │  │
+│  │          │  │ Palette  │  │                   │  │
 │  └──────────┘  └──────────┘  └───────────────────┘  │
 └──────────────────────────────────────────────────────┘
 ```
@@ -67,10 +73,13 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 | **PTY Manager** | Spawns `node-pty` processes per tab. Routes data between PTY and renderer via IPC. Auto-detects shell (PowerShell/zsh/bash) per platform. |
 | **Claude Status Detector** | Class that parses ANSI-stripped terminal output against regex patterns to detect Claude Code's state (idle/thinking/working/waiting/done/error). Maintains per-tab state with idle timeouts. |
 | **Project Detection** | Discovers projects from VS Code, JetBrains, Xcode, Visual Studio configs and common dev directories. Identifies projects by marker files (.git, package.json, Cargo.toml, etc.). |
-| **Git Operations** | Creates checkpoint commits (`wotch-checkpoint-*`) and reads git status (branch, changed files, checkpoint count). |
-| **Settings Manager** | Reads/writes `~/.wotch/settings.json`. Merges with defaults on load. |
+| **Git Operations** | Creates checkpoint commits (`wotch-checkpoint-*`), reads git status (branch, changed files, checkpoint count), and generates diffs for the diff viewer. Uses `execFileSync` for commit messages (injection-safe). |
+| **Settings Manager** | Reads/writes `~/.wotch/settings.json`. Merges with defaults on load. Settings include theme, display index, auto-launch, and all UI dimensions. |
 | **System Tray** | Provides toggle/quit menu. Uses platform-appropriate tray icon. |
 | **macOS Notch Detection** | Detects notch via menu bar height threshold (>30px) and known notch display resolutions. Adjusts window Y position accordingly. |
+| **Auto-Updater** | Checks GitHub Releases for updates via `electron-updater`. Downloads and installs on quit. Only active in packaged builds. |
+| **Notification Manager** | Fires Electron `Notification` when Claude transitions from thinking/working to done/error while the window is unfocused. Checks `Notification.isSupported()`. |
+| **Display Manager** | Supports multi-monitor via `getTargetDisplay()` helper. Falls back to primary display on disconnect. Configurable via `displayIndex` setting. |
 
 ### Preload Script (`src/preload.js`)
 
@@ -78,19 +87,27 @@ Secure IPC bridge using `contextBridge.exposeInMainWorld`. Exposes the `window.w
 - PTY operations (create, write, resize, kill, onData, onExit)
 - Expansion and pin state callbacks
 - Claude status updates
-- Project detection and git operations
+- Project detection and git operations (checkpoint, status, diff)
 - Settings CRUD
 - Platform info
+- Auto-update notifications
+- Display management
+- Window resize
 
-### Renderer (`src/index.html`)
+### Renderer (`src/index.html` + `src/renderer.js`)
 
-Single-page app with inline CSS and JS. Contains:
+HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). Contains:
 - **Pill UI**: Status dot (color-coded by Claude state), label, dropdown arrow
-- **Tab bar**: Create/switch/close terminal tabs, project name display
-- **xterm.js terminals**: Full terminal emulation with fit and web-links addons
-- **Project picker**: Dropdown of detected projects, sets CWD for new tabs
-- **Git status bar**: Branch name, changed file count, checkpoint count, checkpoint button
-- **Settings panel**: Sliders and inputs for all configurable options
+- **Tab bar**: Create/switch/close terminal tabs with per-tab status dots
+- **xterm.js terminals**: Full terminal emulation with fit, search, and web-links addons
+- **Terminal search**: Ctrl+F search overlay with prev/next navigation
+- **Project picker**: Dropdown of detected projects (VS Code, JetBrains, Xcode, Visual Studio, filesystem scan)
+- **Git status bar**: Branch name, changed file count, checkpoint count, checkpoint button, diff viewer button
+- **Diff viewer**: Color-coded git diff overlay (green/red/blue syntax)
+- **Command palette**: Ctrl+Shift+P fuzzy-filtered command overlay
+- **Themes**: Dark, light, purple, green presets via CSS custom property swapping
+- **Settings panel**: Appearance (theme), dimensions, behavior (auto-launch Claude), display selector, shell
+- **Drag to resize**: Bottom edge handle for live panel height adjustment
 
 ## Data Flow
 
@@ -111,7 +128,9 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 | `node-pty` | Pseudoterminal | Real terminal emulation (not just subprocess stdout) |
 | `@xterm/xterm` | Terminal UI | Industry-standard terminal renderer for the web |
 | `@xterm/addon-fit` | Terminal sizing | Auto-fit terminal to container dimensions |
+| `@xterm/addon-search` | Terminal search | Find text in terminal scrollback (Ctrl+F) |
 | `@xterm/addon-web-links` | Clickable links | Makes URLs in terminal output clickable |
+| `electron-updater` | Auto-update | Checks GitHub Releases and installs updates on quit |
 
 ## Key Design Decisions
 
@@ -121,7 +140,7 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 
 3. **Single window, two states** — Rather than two separate windows, we resize one window between pill and expanded bounds. This avoids focus-stealing issues and Z-order complexity.
 
-4. **Inline renderer code** — All renderer HTML/CSS/JS lives in a single `index.html`. For a UI of this size, this avoids build tooling complexity while keeping everything in one place.
+4. **Split renderer code** — HTML/CSS in `index.html`, all JS in `renderer.js`. Originally inline, extracted when the file exceeded 1,500 lines after Phase 6 features. No bundler needed — `renderer.js` is loaded as a native ES module via `<script type="module" src="renderer.js">`.
 
 5. **node-pty over child_process** — `child_process.spawn` doesn't give a real TTY, which means no color codes, no readline, no full-screen TUI support. `node-pty` provides a proper pseudoterminal.
 
@@ -132,7 +151,7 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 - **Context isolation enabled** — `contextIsolation: true` and `nodeIntegration: false` in webPreferences. The renderer cannot access Node.js APIs directly.
 - **Preload bridge** — Only specific IPC channels are exposed via `contextBridge`. No arbitrary IPC.
 - **No remote content** — The app loads only local files (`loadFile`), never remote URLs.
-- **Shell execution** — PTY spawns the user's configured shell. Git operations use `execSync` with fixed command templates (no user-controlled interpolation in commands).
+- **Shell execution** — PTY spawns the user's configured shell. Git checkpoint uses `execFileSync` with argument arrays (no shell interpolation). Other git operations use `execSync` with fixed command strings.
 - **Settings file** — Stored in user home directory with standard file permissions. No secrets stored.
 
 ## Performance Considerations

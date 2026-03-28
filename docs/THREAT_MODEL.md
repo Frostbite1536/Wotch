@@ -81,7 +81,7 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 | Threat | Risk | Mitigation |
 |--------|------|------------|
 | Renderer escapes sandbox to access Node.js | High (if violated) | **Mitigation:** `contextIsolation: true`, `nodeIntegration: false`. This is INV-SEC-001. The preload bridge only exposes specific channels. |
-| Malicious npm dependency in main process | High | Main process has full system access. **Mitigation:** Minimal dependency tree (4 runtime deps). Pin versions. Review updates. Use `npm audit`. |
+| Malicious npm dependency in main process | High | Main process has full system access. **Mitigation:** Minimal dependency tree (6 runtime deps). Pin versions. Review updates. Use `npm audit`. |
 
 ## Attack Surface
 
@@ -89,9 +89,11 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 - **Terminal output** (ANSI sequences, arbitrary text from commands)
 - **IDE configuration files** (JSON/XML read from known paths)
 - **Git repository state** (branch names, file paths, hook scripts)
+- **Git diff output** (displayed in diff viewer with HTML escaping)
 - **User settings file** (~/.wotch/settings.json)
 - **Keyboard input** (global hotkey registration)
 - **Mouse position** (screen.getCursorScreenPoint)
+- **GitHub Releases API** (auto-updater checks for new versions)
 
 ### Internal Inputs
 - **IPC messages** between renderer and main (constrained by preload bridge)
@@ -112,8 +114,9 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 - Context isolation and disabled nodeIntegration (INV-SEC-001)
 - No remote content loading (INV-SEC-002)
 - Scoped preload bridge (INV-SEC-003)
-- Fixed git command templates, no shell interpolation of user input (INV-SEC-004)
-- Minimal runtime dependency count (4 packages)
+- Fixed git command templates; checkpoint uses `execFileSync` with argument arrays (INV-SEC-004)
+- Minimal runtime dependency count (6 packages)
+- Auto-updater checks only GitHub Releases from the configured owner/repo
 
 ### Detective
 - `npm audit` in CI pipeline
@@ -125,6 +128,8 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 
 ## Open Issues
 
-1. **No code signing yet** — unsigned builds will trigger OS warnings (Windows SmartScreen, macOS Gatekeeper). Phase 5 goal.
+1. **No code signing yet** — unsigned builds will trigger OS warnings (Windows SmartScreen, macOS Gatekeeper). Deferred due to certificate costs.
 2. **No screen share protection** — terminal content is visible during screen shares. Consider a blur/hide mode.
 3. **Git hooks are trusted** — Wotch executes git commands that may trigger hooks in the repo. This matches normal terminal behavior but is worth documenting.
+4. **Auto-updater without code signing** — electron-updater can download and install updates, but without signed builds the OS may block installation. Users must manually approve unsigned updates.
+5. **Diff viewer XSS surface** — Git diff output is rendered as HTML with `escapeHtml()` (escapes `&`, `<`, `>`, `"`, `'`). If escaping is bypassed, malicious diff content could inject HTML into the renderer. Currently mitigated by the escape function and context isolation.

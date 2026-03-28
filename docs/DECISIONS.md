@@ -37,3 +37,27 @@ Significant architectural and product decisions, recorded for future context.
 **Decision:** Adopt safe-vibe-coding documentation structure (ARCHITECTURE.md, INVARIANTS.md, ROADMAP.md, THREAT_MODEL.md, engineering prompt, checklist, decision log).
 **Context:** Following the safe-vibe-coding guide from https://github.com/Frostbite1536/safe-vibe-coding to establish clear guardrails for AI-assisted development on this project.
 **Trade-off:** Upfront documentation effort. Pays off by preventing drift and giving AI collaborators clear constraints.
+
+## 2026-03-28: Extract renderer.js from index.html
+
+**Decision:** Move all renderer JavaScript into a separate `src/renderer.js` file loaded via `<script type="module" src="renderer.js">`.
+**Context:** After implementing Phase 6 features, index.html exceeded 1,500 lines. The file was getting hard to navigate with inline CSS + HTML + JS all mixed together.
+**Trade-off:** Two files to maintain instead of one. Mitigated by clear separation: CSS/HTML in index.html, all JS in renderer.js. No build tooling needed — native ES modules work in Electron.
+
+## 2026-03-28: CSS Custom Properties for Theming
+
+**Decision:** Implement themes as preset objects that map CSS variable names to values, applied via `document.documentElement.style.setProperty()`.
+**Context:** Needed runtime theme switching without rebuilding. CSS custom properties (`:root` vars) are already used throughout the codebase for colors.
+**Trade-off:** Theme presets are hardcoded in renderer.js. A future custom theme editor would need to extend this pattern. Terminal themes (xterm.js) must be updated separately from CSS vars.
+
+## 2026-03-28: execFileSync for Git Commit Messages
+
+**Decision:** Replace `execSync(\`git commit -m "${msg}"\`)` with `execFileSync("git", ["commit", "-m", msg])` for checkpoint creation.
+**Context:** The original code used shell string interpolation, which was vulnerable to injection if a custom message contained quotes, backticks, or `$()`. While the auto-generated timestamp messages were safe, user-provided messages were not.
+**Trade-off:** None — `execFileSync` with argument arrays is strictly better for parameterized commands. Other git commands that use fixed strings (`git status`, `git diff HEAD~1`) remain as `execSync` since they have no user input.
+
+## 2026-03-28: Multi-Monitor via Display Index
+
+**Decision:** Add a `displayIndex` setting and `getTargetDisplay()` helper that selects from `screen.getAllDisplays()`, with fallback to primary on disconnect.
+**Context:** Users with multiple monitors may want Wotch on a secondary display. The original code hardcoded `screen.getPrimaryDisplay()` in all positioning functions.
+**Trade-off:** Adds complexity to positioning logic. All `getPillBounds`/`getExpandedBounds` calls now add `display.bounds.x/y` offsets. Risk of positioning bugs on unusual multi-monitor arrangements.

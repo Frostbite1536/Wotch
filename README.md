@@ -11,13 +11,22 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Notch-style pill** — small indicator at the top-center of your screen
 - **Hover to reveal** — mouse over the pill to expand the terminal panel
 - **Global hotkey** — `Ctrl+`` ` (or `⌘+`` ` on Mac) toggles the panel from anywhere
-- **Multi-tab terminals** — run multiple shell sessions side by side
+- **Multi-tab terminals** — run multiple shell sessions side by side, with per-tab status dots
 - **Real terminal** — full PowerShell/bash/zsh via node-pty + xterm.js
-- **Project detection** — auto-discovers VS Code projects, scans ~/Projects, ~/dev, etc.
+- **Terminal search** — `Ctrl+F` to search terminal scrollback
+- **Command palette** — `Ctrl+Shift+P` for quick access to all commands
+- **Themes** — dark, light, purple, and green presets
+- **Project detection** — auto-discovers VS Code, JetBrains, Xcode, Visual Studio projects and common dev dirs
 - **Git checkpoints** — `Ctrl+S` / `⌘S` snapshots your project before Claude makes changes
+- **Checkpoint diff viewer** — see what changed since the last checkpoint
 - **Live git status** — shows branch, changed files, and checkpoint count
+- **Claude finish notification** — system notification when Claude is done (while Wotch is in background)
+- **Auto-launch Claude** — optionally type `claude` in every new tab
+- **Drag to resize** — drag the bottom edge to resize the panel
+- **Multiple monitor support** — choose which display to show the pill on
 - **macOS notch detection** — positions in the notch area on notch Macs, below the menu bar on others
 - **Always on top** — stays above all other windows
+- **Auto-update** — checks GitHub Releases for new versions
 - **System tray** — right-click tray icon to toggle or quit
 
 ## Requirements
@@ -83,8 +92,10 @@ npm start
 | `Ctrl+S` | `⌘S` | Git checkpoint |
 | `Ctrl+T` | `⌘T` | New tab |
 | `Ctrl+W` | `⌘W` | Close tab |
+| `Ctrl+F` | `⌘F` | Search terminal |
+| `Ctrl+Shift+P` | `⌘Shift+P` | Command palette |
 | `Ctrl+P` | `⌘P` | Pin / unpin panel |
-| `Escape` | same | Close settings |
+| `Escape` | same | Close overlay / settings |
 | Hover top-center | same | Expand panel |
 | Move mouse away | same | Collapse (unless pinned) |
 
@@ -101,9 +112,12 @@ This creates an installer in the `dist/` folder using electron-builder.
 ```
 wotch/
 ├── src/
-│   ├── main.js          # Electron main process (window, PTY, hotkey, status, git)
-│   ├── preload.js       # Secure IPC bridge (contextBridge)
-│   └── index.html       # Renderer (terminal UI, tabs, settings, pill)
+│   ├── main.js          # Electron main process (window, PTY, hotkey, status, git, updater)
+│   ├── preload.js       # Secure IPC bridge (contextBridge, 24 methods)
+│   ├── renderer.js      # Renderer JS (tabs, themes, search, palette, diff, resize)
+│   └── index.html       # Renderer HTML/CSS (pill, panel, overlays, settings)
+├── assets/
+│   └── icon.png         # App icon (used by electron-builder for all platforms)
 ├── docs/
 │   ├── ARCHITECTURE.md  # Component diagram, data flow, design decisions
 │   ├── INVARIANTS.md    # Non-negotiable rules (security, data, UX, platform)
@@ -114,7 +128,7 @@ wotch/
 │   └── engineering.md   # Default coding prompt for AI-assisted development
 ├── .github/
 │   └── workflows/
-│       └── build.yml    # GitHub Actions: build .exe on version tag push
+│       └── build.yml    # GitHub Actions: build .exe/.dmg/.AppImage on version tag
 ├── CHECKLIST.md         # Pre-merge checklist
 ├── package.json
 ├── .gitignore
