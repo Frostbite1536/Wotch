@@ -3,7 +3,7 @@ const path = require("path");
 const pty = require("node-pty");
 const os = require("os");
 const fs = require("fs");
-const { execSync, exec } = require("child_process");
+const { execSync, execFileSync, exec } = require("child_process");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -323,7 +323,7 @@ function startMouseTracking() {
       clearTimeout(collapseTimeout);
       collapseTimeout = null;
     }
-  }, MOUSE_POLL_MS);
+  }, settings.mousePollingMs);
 }
 
 function stopMouseTracking() {
@@ -646,7 +646,7 @@ class ClaudeStatusDetector {
 
   // Get the "most interesting" status across all tabs
   getAggregateStatus() {
-    const priority = { error: 6, working: 5, thinking: 4, tool_use: 3, waiting: 2, done: 1, idle: 0 };
+    const priority = { error: 6, working: 5, thinking: 4, waiting: 2, done: 1, idle: 0 };
     let best = { state: "idle", description: "", tabId: null };
 
     for (const [tabId, tab] of this.tabs) {
@@ -1056,7 +1056,7 @@ function gitCheckpoint(projectPath, message) {
     execSync("git add -A", { cwd: projectPath, timeout: 5000 });
 
     // Create checkpoint commit
-    execSync(`git commit -m "${checkpointMsg}"`, {
+    execFileSync("git", ["commit", "-m", checkpointMsg], {
       cwd: projectPath, encoding: "utf-8", timeout: 10000,
     });
 
@@ -1257,6 +1257,40 @@ app.whenReady().then(() => {
 
   if (WAYLAND) {
     console.log("[wotch] Running on Wayland — hover-to-reveal may be limited, use Ctrl+` to toggle");
+  }
+
+  // ── Auto-update (only in packaged builds) ──
+  if (app.isPackaged) {
+    try {
+      const { autoUpdater } = require("electron-updater");
+      autoUpdater.logger = null;
+      autoUpdater.autoDownload = true;
+      autoUpdater.autoInstallOnAppQuit = true;
+
+      autoUpdater.on("update-available", (info) => {
+        console.log(`[wotch] Update available: v${info.version}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("update-available", info.version);
+        }
+      });
+
+      autoUpdater.on("update-downloaded", (info) => {
+        console.log(`[wotch] Update downloaded: v${info.version}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("update-downloaded", info.version);
+        }
+      });
+
+      autoUpdater.on("error", (err) => {
+        console.log("[wotch] Auto-update error:", err.message);
+      });
+
+      setTimeout(() => {
+        autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+      }, 10000);
+    } catch (err) {
+      console.log("[wotch] Auto-update not available:", err.message);
+    }
   }
 });
 

@@ -50,4 +50,22 @@ contextBridge.exposeInMainWorld("wotch", {
   onPinState: (callback) => {
     ipcRenderer.on("pin-state", (_e, pinned) => callback(pinned));
   },
+
+  // Auto-update
+  onUpdateAvailable: (callback) => {
+    ipcRenderer.on("update-available", (_e, version) => callback(version));
+  },
+  onUpdateDownloaded: (callback) => {
+    ipcRenderer.on("update-downloaded", (_e, version) => callback(version));
+  },
+
+  // Git diff
+  gitDiff: (projectPath, mode) =>
+    ipcRenderer.invoke("git-diff", { projectPath, mode }),
+
+  // Display management
+  getDisplays: () => ipcRenderer.invoke("get-displays"),
+
+  // Window resize
+  resizeWindow: (height) => ipcRenderer.send("resize-window", height),
 });
