@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage } = require("electron");
+const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification } = require("electron");
 const path = require("path");
 const pty = require("node-pty");
 const os = require("os");
@@ -68,6 +68,9 @@ const DEFAULT_SETTINGS = {
   defaultShell: "",          // empty = auto-detect
   startExpanded: false,
   pinned: false,             // remember pin state across restarts
+  theme: "dark",
+  autoLaunchClaude: false,
+  displayIndex: 0,           // 0 = primary display
 };
 
 function loadSettings() {
@@ -106,36 +109,39 @@ let collapseTimeout = null;
 let ptyProcesses = new Map(); // tabId → pty
 
 // ── Window positioning ──────────────────────────────────────────────
+function getTargetDisplay() {
+  const displays = screen.getAllDisplays();
+  const idx = Math.min(settings.displayIndex || 0, displays.length - 1);
+  return displays[idx];
+}
+
 function getTopOffset() {
-  // On macOS without a notch, position below the menu bar.
-  // On macOS with a notch, position at y=0 (the pill sits in the notch area).
-  // On Windows/Linux, position at y=0 (no menu bar at the top).
   if (IS_MAC && !HAS_NOTCH) {
-    const primary = screen.getPrimaryDisplay();
-    return primary.workArea.y - primary.bounds.y; // menu bar height (~25px)
+    const display = getTargetDisplay();
+    return display.workArea.y - display.bounds.y;
   }
   return 0;
 }
 
 function getPillBounds() {
-  const primary = screen.getPrimaryDisplay();
-  const screenW = primary.workAreaSize.width;
+  const display = getTargetDisplay();
+  const screenW = display.workAreaSize.width;
   const yOffset = getTopOffset();
   return {
-    x: Math.round((screenW - settings.pillWidth) / 2),
-    y: yOffset,
+    x: display.bounds.x + Math.round((screenW - settings.pillWidth) / 2),
+    y: display.bounds.y + yOffset,
     width: settings.pillWidth,
     height: settings.pillHeight,
   };
 }
 
 function getExpandedBounds() {
-  const primary = screen.getPrimaryDisplay();
-  const screenW = primary.workAreaSize.width;
+  const display = getTargetDisplay();
+  const screenW = display.workAreaSize.width;
   const yOffset = getTopOffset();
   return {
-    x: Math.round((screenW - settings.expandedWidth) / 2),
-    y: yOffset,
+    x: display.bounds.x + Math.round((screenW - settings.expandedWidth) / 2),
+    y: display.bounds.y + yOffset,
     width: settings.expandedWidth,
     height: settings.expandedHeight,
   };
@@ -385,6 +391,7 @@ function createPty(tabId, cwd) {
 class ClaudeStatusDetector {
   constructor() {
     this.tabs = new Map(); // tabId → { state, description, buffer, lastActivity, claudeActive }
+    this.previousStates = new Map(); // tabId → previous state
     this.broadcastTimer = null;
   }
 
@@ -671,6 +678,28 @@ class ClaudeStatusDetector {
     if (this.broadcastTimer) return;
     this.broadcastTimer = setTimeout(() => {
       this.broadcastTimer = null;
+
+      // Check for done/error transitions → fire notification
+      for (const [tabId, tab] of this.tabs) {
+        const prev = this.previousStates.get(tabId) || "idle";
+        if ((prev === "thinking" || prev === "working") &&
+            (tab.state === "done" || tab.state === "error")) {
+          if (mainWindow && !mainWindow.isFocused()) {
+            try {
+              const notif = new Notification({
+                title: "Wotch",
+                body: tab.state === "error"
+                  ? `Claude error: ${tab.description || "Unknown"}`
+                  : `Claude finished: ${tab.description || "Task complete"}`,
+                silent: false,
+              });
+              notif.show();
+            } catch { /* notifications may not be available */ }
+          }
+        }
+        this.previousStates.set(tabId, tab.state);
+      }
+
       if (mainWindow && !mainWindow.isDestroyed()) {
         const aggregate = this.getAggregateStatus();
         const perTab = {};
@@ -1202,6 +1231,40 @@ ipcMain.handle("set-pinned", (_event, pinned) => {
 
 ipcMain.handle("get-pinned", () => isPinned);
 
+// Git diff
+ipcMain.handle("git-diff", (_event, { projectPath, mode }) => {
+  try {
+    const cmd = mode === "last-checkpoint" ? "git diff HEAD~1" : "git diff";
+    const output = execSync(cmd, {
+      cwd: projectPath, encoding: "utf-8", timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    });
+    return { success: true, diff: output || "(no changes)" };
+  } catch (err) {
+    return { success: false, diff: err.message };
+  }
+});
+
+// Display management
+ipcMain.handle("get-displays", () => {
+  return screen.getAllDisplays().map((d, i) => ({
+    index: i,
+    label: `Display ${i + 1}`,
+    width: d.bounds.width,
+    height: d.bounds.height,
+    primary: d.id === screen.getPrimaryDisplay().id,
+  }));
+});
+
+// Window resize (from drag handle)
+ipcMain.on("resize-window", (_event, height) => {
+  if (!mainWindow || !isExpanded) return;
+  const clamped = Math.max(200, Math.min(900, height));
+  settings.expandedHeight = clamped;
+  const bounds = getExpandedBounds();
+  mainWindow.setBounds(bounds, false);
+});
+
 // ── Electron CLI flags for Wayland support ─────────────────────────
 // Enable Ozone so Electron can run natively on Wayland when available.
 // This must be called before app.whenReady().
@@ -1258,6 +1321,17 @@ app.whenReady().then(() => {
   if (WAYLAND) {
     console.log("[wotch] Running on Wayland — hover-to-reveal may be limited, use Ctrl+` to toggle");
   }
+
+  // Fall back to primary display if current display is disconnected
+  screen.on("display-removed", () => {
+    const displays = screen.getAllDisplays();
+    if (settings.displayIndex >= displays.length) {
+      settings.displayIndex = 0;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+      }
+    }
+  });
 
   // ── Auto-update (only in packaged builds) ──
   if (app.isPackaged) {

@@ -549,6 +549,143 @@
       color: var(--accent);
     }
 
+    /* ── Search bar ─────────────────────────────────────────── */
+    #search-bar {
+      display: none;
+      position: absolute;
+      top: 0; right: 12px;
+      z-index: 40;
+      padding: 6px 10px;
+      background: var(--bg-solid);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      gap: 6px;
+      align-items: center;
+    }
+    #search-bar.open { display: flex; }
+    #search-input {
+      width: 180px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: rgba(148, 163, 184, 0.06);
+      color: var(--text);
+      font-size: 11px;
+      font-family: var(--font);
+      outline: none;
+    }
+    #search-input:focus { border-color: var(--accent); }
+    .search-btn {
+      padding: 3px 6px;
+      border-radius: 4px;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: var(--font);
+    }
+    .search-btn:hover { background: rgba(148, 163, 184, 0.1); }
+
+    /* ── Diff viewer ──────────────────────────────────────── */
+    #diff-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 65;
+      flex-direction: column;
+      background: var(--bg-solid);
+      animation: slideIn 0.2s ease-out;
+    }
+    #diff-overlay.open { display: flex; }
+    .diff-content {
+      flex: 1;
+      overflow: auto;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-family: var(--font);
+      white-space: pre;
+      line-height: 1.4;
+      color: var(--text-dim);
+    }
+    .diff-add { color: #34d399; }
+    .diff-del { color: #f87171; }
+    .diff-hunk { color: #60a5fa; }
+    .diff-meta { color: var(--text-muted); }
+
+    /* ── Command palette ──────────────────────────────────── */
+    #palette-overlay {
+      display: none;
+      position: absolute;
+      top: 60px; left: 50%;
+      transform: translateX(-50%);
+      width: 320px;
+      z-index: 80;
+      background: var(--bg-solid);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+      overflow: hidden;
+      animation: slideIn 0.15s ease-out;
+    }
+    #palette-overlay.open { display: block; }
+    #palette-input {
+      width: 100%; box-sizing: border-box;
+      padding: 10px 14px;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      font-family: var(--font);
+      outline: none;
+    }
+    #palette-list { max-height: 260px; overflow-y: auto; }
+    .palette-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: var(--font);
+      color: var(--text);
+      transition: background 0.1s;
+    }
+    .palette-item:hover, .palette-item.active {
+      background: var(--accent-dim);
+    }
+    .palette-shortcut {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* ── Resize handle ────────────────────────────────────── */
+    .resize-handle {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 8px;
+      cursor: ns-resize;
+      z-index: 70;
+    }
+    .resize-handle:hover {
+      background: linear-gradient(transparent, rgba(168, 139, 250, 0.15));
+    }
+
+    /* ── Select inputs ────────────────────────────────────── */
+    select.setting-input {
+      background: rgba(148, 163, 184, 0.06);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-family: var(--font);
+      font-size: 11px;
+      outline: none;
+    }
+    select.setting-input:focus { border-color: var(--accent); }
+    select.setting-input option { background: var(--bg-solid); color: var(--text); }
+
     /* ── Animations ────────────────────────────────────────── */
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 1; }
@@ -820,19 +957,28 @@
       </span>
       <span class="git-changes" id="git-changes">0 changes</span>
       <span class="git-checkpoints" id="git-checkpoints">0 checkpoints</span>
+      <button class="git-checkpoint-btn" id="btn-diff" title="View diff" style="border-color:rgba(96,165,250,0.2);background:rgba(96,165,250,0.08);color:#60a5fa;">Diff</button>
       <button class="git-checkpoint-btn" id="btn-checkpoint" title="Create checkpoint (Ctrl+S)">
         📸 Checkpoint
       </button>
     </div>
 
-    <div id="terminals"></div>
+    <div id="terminals">
+      <div id="search-bar">
+        <input type="text" id="search-input" placeholder="Search...">
+        <button class="search-btn" id="search-prev">&#x25B2;</button>
+        <button class="search-btn" id="search-next">&#x25BC;</button>
+        <button class="search-btn" id="search-close">&#x2715;</button>
+      </div>
+    </div>
 
     <div id="bottom-bar">
       <div class="shortcuts" id="shortcuts-bar">
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+`</kbd><span>Toggle</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+S</kbd><span>Checkpoint</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+T</kbd><span>New Tab</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+W</kbd><span>Close Tab</span></div>
+        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+F</kbd><span>Search</span></div>
+        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+P</kbd><span>Commands</span></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span id="version">v1.3</span>
@@ -847,6 +993,22 @@
         <button class="settings-close" id="btn-settings-close">✕</button>
       </div>
       <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-section-title">Appearance</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Theme</div>
+              <div class="setting-hint">Color scheme</div>
+            </div>
+            <select class="setting-input setting-input-wide" id="set-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="purple">Purple</option>
+              <option value="green">Green</option>
+            </select>
+          </div>
+        </div>
+
         <div class="settings-section">
           <div class="settings-section-title">Panel Dimensions</div>
           <div class="setting-row">
@@ -902,6 +1064,26 @@
             </div>
             <button class="setting-toggle" id="set-remember-pin"></button>
           </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Auto-launch Claude</div>
+              <div class="setting-hint">Type "claude" in new tabs</div>
+            </div>
+            <button class="setting-toggle" id="set-auto-claude"></button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Display</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Target display</div>
+              <div class="setting-hint">Which monitor to show the pill on</div>
+            </div>
+            <select class="setting-input setting-input-wide" id="set-display">
+              <option value="0">Primary</option>
+            </select>
+          </div>
         </div>
 
         <div class="settings-section">
@@ -920,6 +1102,23 @@
         <span class="settings-save-info">Changes save automatically</span>
       </div>
     </div>
+    <!-- Diff viewer overlay -->
+    <div id="diff-overlay">
+      <div class="settings-header">
+        <h2>Checkpoint Diff</h2>
+        <button class="settings-close" id="btn-diff-close">&#x2715;</button>
+      </div>
+      <div class="diff-content" id="diff-content"></div>
+    </div>
+
+    <!-- Command palette overlay -->
+    <div id="palette-overlay">
+      <input type="text" id="palette-input" placeholder="Type a command...">
+      <div id="palette-list"></div>
+    </div>
+
+    <!-- Resize handle -->
+    <div class="resize-handle" id="resize-handle"></div>
   </div>
 
   <!-- Toast notification -->

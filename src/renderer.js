@@ -1,13 +1,15 @@
 import { Terminal } from "../node_modules/@xterm/xterm/lib/xterm.mjs";
 import { FitAddon } from "../node_modules/@xterm/addon-fit/lib/addon-fit.mjs";
+import { SearchAddon } from "../node_modules/@xterm/addon-search/lib/addon-search.mjs";
 
 // ── State ──────────────────────────────────────────────
-let tabs = [];          // { id, name, term, fitAddon, el, cwd }
+let tabs = [];          // { id, name, term, fitAddon, searchAddon, el, cwd }
 let activeTabId = null;
 let tabCounter = 0;
 let isExpanded = false;
 let isPinned = false;
 let settingsOpen = false;
+let searchOpen = false;
 
 let tabStatuses = {};   // tabId → { state, description }
 let detectedProjects = [];
@@ -15,6 +17,96 @@ let currentProject = null;  // { name, path, source }
 let gitInfo = null;
 let dropdownOpen = false;
 let gitPollInterval = null;
+
+// ── Themes ──────────────────────────────────────────────
+const THEMES = {
+  dark: {
+    '--bg': 'rgba(10, 10, 18, 0.97)',
+    '--bg-solid': '#0a0a12',
+    '--border': 'rgba(148, 163, 184, 0.12)',
+    '--accent': '#a78bfa',
+    '--accent-dim': 'rgba(168, 139, 250, 0.15)',
+    '--text': '#e2e8f0',
+    '--text-dim': '#64748b',
+    '--text-muted': '#475569',
+    '--green': '#34d399',
+    termBg: '#0a0a12', termFg: '#e2e8f0', termCursor: '#a78bfa',
+  },
+  light: {
+    '--bg': 'rgba(255, 255, 255, 0.97)',
+    '--bg-solid': '#ffffff',
+    '--border': 'rgba(100, 116, 139, 0.2)',
+    '--accent': '#7c3aed',
+    '--accent-dim': 'rgba(124, 58, 237, 0.1)',
+    '--text': '#1e293b',
+    '--text-dim': '#64748b',
+    '--text-muted': '#94a3b8',
+    '--green': '#059669',
+    termBg: '#ffffff', termFg: '#1e293b', termCursor: '#7c3aed',
+  },
+  purple: {
+    '--bg': 'rgba(20, 10, 30, 0.97)',
+    '--bg-solid': '#140a1e',
+    '--border': 'rgba(168, 139, 250, 0.15)',
+    '--accent': '#c084fc',
+    '--accent-dim': 'rgba(192, 132, 252, 0.15)',
+    '--text': '#e2e8f0',
+    '--text-dim': '#a78bfa',
+    '--text-muted': '#6d28d9',
+    '--green': '#34d399',
+    termBg: '#140a1e', termFg: '#e2e8f0', termCursor: '#c084fc',
+  },
+  green: {
+    '--bg': 'rgba(5, 15, 10, 0.97)',
+    '--bg-solid': '#050f0a',
+    '--border': 'rgba(52, 211, 153, 0.15)',
+    '--accent': '#34d399',
+    '--accent-dim': 'rgba(52, 211, 153, 0.15)',
+    '--text': '#d1fae5',
+    '--text-dim': '#6ee7b7',
+    '--text-muted': '#065f46',
+    '--green': '#34d399',
+    termBg: '#050f0a', termFg: '#d1fae5', termCursor: '#34d399',
+  },
+};
+
+let currentTheme = 'dark';
+
+function applyTheme(themeName) {
+  const theme = THEMES[themeName] || THEMES.dark;
+  currentTheme = themeName;
+  const root = document.documentElement;
+  for (const [key, value] of Object.entries(theme)) {
+    if (key.startsWith('--')) {
+      root.style.setProperty(key, value);
+    }
+  }
+  // Update existing terminal themes
+  tabs.forEach((t) => {
+    t.term.options.theme = {
+      ...t.term.options.theme,
+      background: theme.termBg,
+      foreground: theme.termFg,
+      cursor: theme.termCursor,
+    };
+  });
+}
+
+function getTermTheme() {
+  const theme = THEMES[currentTheme] || THEMES.dark;
+  return {
+    background: theme.termBg,
+    foreground: theme.termFg,
+    cursor: theme.termCursor,
+    cursorAccent: theme.termBg,
+    selectionBackground: 'rgba(168, 139, 250, 0.3)',
+    black: '#1e293b', red: '#f87171', green: '#34d399', yellow: '#fbbf24',
+    blue: '#60a5fa', magenta: '#a78bfa', cyan: '#22d3ee', white: '#e2e8f0',
+    brightBlack: '#475569', brightRed: '#fca5a5', brightGreen: '#6ee7b7',
+    brightYellow: '#fde68a', brightBlue: '#93c5fd', brightMagenta: '#c4b5fd',
+    brightCyan: '#67e8f9', brightWhite: '#f8fafc',
+  };
+}
 
 const pillEl = document.getElementById("pill");
 const panelEl = document.getElementById("panel");
@@ -227,33 +319,13 @@ async function createTab(cwdOverride) {
     lineHeight: 1.3,
     cursorBlink: true,
     cursorStyle: "bar",
-    theme: {
-      background: "#0a0a12",
-      foreground: "#e2e8f0",
-      cursor: "#a78bfa",
-      cursorAccent: "#0a0a12",
-      selectionBackground: "rgba(168, 139, 250, 0.3)",
-      black: "#1e293b",
-      red: "#f87171",
-      green: "#34d399",
-      yellow: "#fbbf24",
-      blue: "#60a5fa",
-      magenta: "#a78bfa",
-      cyan: "#22d3ee",
-      white: "#e2e8f0",
-      brightBlack: "#475569",
-      brightRed: "#fca5a5",
-      brightGreen: "#6ee7b7",
-      brightYellow: "#fde68a",
-      brightBlue: "#93c5fd",
-      brightMagenta: "#c4b5fd",
-      brightCyan: "#67e8f9",
-      brightWhite: "#f8fafc",
-    },
+    theme: getTermTheme(),
   });
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+  const searchAddon = new SearchAddon();
+  term.loadAddon(searchAddon);
 
   // DOM
   const containerEl = document.createElement("div");
@@ -270,11 +342,19 @@ async function createTab(cwdOverride) {
   term.onData((data) => window.wotch.writePty(tabId, data));
   term.onResize(({ cols, rows }) => window.wotch.resizePty(tabId, cols, rows));
 
-  const tab = { id: tabId, name, term, fitAddon, el: containerEl, cwd };
+  const tab = { id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd };
   tabs.push(tab);
 
   renderTabBar();
   activateTab(tabId);
+
+  // Auto-launch Claude if enabled
+  try {
+    const s = await window.wotch.getSettings();
+    if (s.autoLaunchClaude) {
+      setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+    }
+  } catch { /* ignore */ }
 
   return tab;
 }
@@ -440,9 +520,16 @@ btnAddTab.addEventListener("click", () => createTab());
 
 // Keyboard shortcuts within the renderer
 document.addEventListener("keydown", (e) => {
-  // Don't intercept if typing in a settings input
+  // Don't intercept if typing in a settings input or search/palette input
   if (e.target.classList.contains("setting-input") || e.target.classList.contains("setting-input-wide")) return;
+  if (e.target.id === "search-input" || e.target.id === "palette-input") return;
 
+  // Ctrl+Shift+P — command palette
+  if (e.ctrlKey && e.shiftKey && e.key === "P") {
+    e.preventDefault();
+    paletteOpen ? closePalette() : openPalette();
+    return;
+  }
   if (e.ctrlKey && e.key === "t") {
     e.preventDefault();
     createTab();
@@ -455,11 +542,18 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     doCheckpoint();
   }
-  if (e.key === "Escape" && settingsOpen) {
-    closeSettings();
+  if (e.ctrlKey && e.key === "f") {
+    e.preventDefault();
+    searchOpen ? closeSearch() : openSearch();
   }
-  // Ctrl/Cmd+P to toggle pin
-  if (e.ctrlKey && e.key === "p") {
+  if (e.key === "Escape") {
+    if (paletteOpen) closePalette();
+    else if (searchOpen) closeSearch();
+    else if (diffOverlay.classList.contains("open")) closeDiff();
+    else if (settingsOpen) closeSettings();
+  }
+  // Ctrl/Cmd+P to toggle pin (only when Shift not held, to avoid conflict with palette)
+  if (e.ctrlKey && !e.shiftKey && e.key === "p") {
     e.preventDefault();
     togglePin();
   }
@@ -506,6 +600,9 @@ const setHoverPadding = document.getElementById("set-hover-padding");
 const setStartExpanded = document.getElementById("set-start-expanded");
 const setRememberPin = document.getElementById("set-remember-pin");
 const setDefaultShell = document.getElementById("set-default-shell");
+const setTheme = document.getElementById("set-theme");
+const setAutoLaunchClaude = document.getElementById("set-auto-claude");
+const setDisplay = document.getElementById("set-display");
 
 function openSettings() {
   settingsOpen = true;
@@ -532,6 +629,18 @@ async function loadSettingsUI() {
     setStartExpanded.classList.toggle("on", s.startExpanded);
     setRememberPin.classList.toggle("on", s.pinned);
     setDefaultShell.value = s.defaultShell || "";
+    if (setTheme) setTheme.value = s.theme || "dark";
+    if (setAutoLaunchClaude) setAutoLaunchClaude.classList.toggle("on", s.autoLaunchClaude || false);
+    // Populate display selector
+    if (setDisplay) {
+      try {
+        const displays = await window.wotch.getDisplays();
+        setDisplay.innerHTML = displays.map((d) =>
+          `<option value="${d.index}">${d.label} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
+        ).join("");
+        setDisplay.value = s.displayIndex || 0;
+      } catch { /* ignore */ }
+    }
   } catch { /* ignore */ }
 }
 
@@ -549,6 +658,9 @@ function debouncedSave() {
       startExpanded: setStartExpanded.classList.contains("on"),
       pinned: setRememberPin.classList.contains("on") ? isPinned : false,
       defaultShell: setDefaultShell.value.trim(),
+      theme: setTheme ? setTheme.value : "dark",
+      autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
+      displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -568,6 +680,21 @@ setRememberPin.addEventListener("click", () => {
   setRememberPin.classList.toggle("on");
   debouncedSave();
 });
+if (setTheme) {
+  setTheme.addEventListener("change", () => {
+    applyTheme(setTheme.value);
+    debouncedSave();
+  });
+}
+if (setAutoLaunchClaude) {
+  setAutoLaunchClaude.addEventListener("click", () => {
+    setAutoLaunchClaude.classList.toggle("on");
+    debouncedSave();
+  });
+}
+if (setDisplay) {
+  setDisplay.addEventListener("change", debouncedSave);
+}
 
 btnSettings.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -590,15 +717,189 @@ btnSettingsReset.addEventListener("click", async () => {
   }
 });
 
+// ── Terminal search (Ctrl+F) ──────────────────────────
+const searchBar = document.getElementById("search-bar");
+const searchInput = document.getElementById("search-input");
+
+function openSearch() {
+  searchOpen = true;
+  searchBar.classList.add("open");
+  searchInput.focus();
+  searchInput.select();
+}
+
+function closeSearch() {
+  searchOpen = false;
+  searchBar.classList.remove("open");
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (active) {
+    active.searchAddon.clearDecorations();
+    active.term.focus();
+  }
+}
+
+function doSearch(direction) {
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (!active || !searchInput.value) return;
+  if (direction === "prev") {
+    active.searchAddon.findPrevious(searchInput.value);
+  } else {
+    active.searchAddon.findNext(searchInput.value);
+  }
+}
+
+searchInput.addEventListener("input", () => doSearch("next"));
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { doSearch(e.shiftKey ? "prev" : "next"); e.preventDefault(); }
+  if (e.key === "Escape") { closeSearch(); e.preventDefault(); }
+});
+document.getElementById("search-prev").addEventListener("click", () => doSearch("prev"));
+document.getElementById("search-next").addEventListener("click", () => doSearch("next"));
+document.getElementById("search-close").addEventListener("click", closeSearch);
+
+// ── Diff viewer ──────────────────────────────────────
+const diffOverlay = document.getElementById("diff-overlay");
+const diffContent = document.getElementById("diff-content");
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function showDiff(mode) {
+  if (!currentProject) { showToast("Select a project first", "error"); return; }
+  const result = await window.wotch.gitDiff(currentProject.path, mode);
+
+  if (result.success) {
+    diffContent.innerHTML = result.diff.split("\n").map((line) => {
+      if (line.startsWith("+") && !line.startsWith("+++")) return `<span class="diff-add">${escapeHtml(line)}</span>`;
+      if (line.startsWith("-") && !line.startsWith("---")) return `<span class="diff-del">${escapeHtml(line)}</span>`;
+      if (line.startsWith("@@")) return `<span class="diff-hunk">${escapeHtml(line)}</span>`;
+      if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++"))
+        return `<span class="diff-meta">${escapeHtml(line)}</span>`;
+      return escapeHtml(line);
+    }).join("\n");
+  } else {
+    diffContent.textContent = result.diff;
+  }
+  diffOverlay.classList.add("open");
+}
+
+function closeDiff() {
+  diffOverlay.classList.remove("open");
+}
+
+document.getElementById("btn-diff-close").addEventListener("click", closeDiff);
+document.getElementById("btn-diff")?.addEventListener("click", () => showDiff("last-checkpoint"));
+
+// ── Drag to resize ───────────────────────────────────
+const resizeHandle = document.getElementById("resize-handle");
+let resizing = false;
+let resizeStartY = 0;
+let resizeStartHeight = 0;
+
+resizeHandle.addEventListener("mousedown", (e) => {
+  resizing = true;
+  resizeStartY = e.screenY;
+  resizeStartHeight = document.body.offsetHeight;
+  e.preventDefault();
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!resizing) return;
+  const delta = e.screenY - resizeStartY;
+  const newHeight = resizeStartHeight + delta;
+  window.wotch.resizeWindow(newHeight);
+});
+
+document.addEventListener("mouseup", () => {
+  if (resizing) {
+    resizing = false;
+    const h = document.body.offsetHeight;
+    window.wotch.saveSettings({ expandedHeight: h });
+    tabs.forEach((t) => t.fitAddon.fit());
+  }
+});
+
+// ── Command palette (Ctrl+Shift+P) ──────────────────
+const paletteOverlay = document.getElementById("palette-overlay");
+const paletteInput = document.getElementById("palette-input");
+const paletteList = document.getElementById("palette-list");
+let paletteOpen = false;
+let paletteIndex = 0;
+
+const COMMANDS = [
+  { name: "New Tab", shortcut: "Ctrl+T", action: () => createTab() },
+  { name: "Close Tab", shortcut: "Ctrl+W", action: () => activeTabId && closeTab(activeTabId) },
+  { name: "Toggle Pin", shortcut: "Ctrl+P", action: () => togglePin() },
+  { name: "Create Checkpoint", shortcut: "Ctrl+S", action: () => doCheckpoint() },
+  { name: "Search Terminal", shortcut: "Ctrl+F", action: () => openSearch() },
+  { name: "View Diff", shortcut: "", action: () => showDiff("last-checkpoint") },
+  { name: "Open Settings", shortcut: "", action: () => openSettings() },
+  { name: "Scan Projects", shortcut: "", action: () => loadProjects() },
+];
+
+function openPalette() {
+  paletteOpen = true;
+  paletteIndex = 0;
+  paletteInput.value = "";
+  paletteOverlay.classList.add("open");
+  paletteInput.focus();
+  renderPalette();
+}
+
+function closePalette() {
+  paletteOpen = false;
+  paletteOverlay.classList.remove("open");
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (active) active.term.focus();
+}
+
+function getFilteredCommands() {
+  const q = paletteInput.value.toLowerCase();
+  return q ? COMMANDS.filter((c) => c.name.toLowerCase().includes(q)) : COMMANDS;
+}
+
+function renderPalette() {
+  const filtered = getFilteredCommands();
+  paletteIndex = Math.max(0, Math.min(paletteIndex, filtered.length - 1));
+  paletteList.innerHTML = filtered.map((cmd, i) =>
+    `<div class="palette-item${i === paletteIndex ? " active" : ""}" data-idx="${i}">
+      <span>${cmd.name}</span>
+      ${cmd.shortcut ? `<span class="palette-shortcut">${cmd.shortcut}</span>` : ""}
+    </div>`
+  ).join("");
+}
+
+paletteInput.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
+paletteInput.addEventListener("keydown", (e) => {
+  const filtered = getFilteredCommands();
+  if (e.key === "ArrowDown") { paletteIndex = Math.min(paletteIndex + 1, filtered.length - 1); renderPalette(); e.preventDefault(); }
+  if (e.key === "ArrowUp") { paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(); e.preventDefault(); }
+  if (e.key === "Enter" && filtered[paletteIndex]) { closePalette(); filtered[paletteIndex].action(); e.preventDefault(); }
+  if (e.key === "Escape") { closePalette(); e.preventDefault(); }
+});
+paletteList.addEventListener("click", (e) => {
+  const item = e.target.closest(".palette-item");
+  if (item) {
+    const filtered = getFilteredCommands();
+    const cmd = filtered[parseInt(item.dataset.idx)];
+    if (cmd) { closePalette(); cmd.action(); }
+  }
+});
+
 // ── Init ───────────────────────────────────────────────
 // Auto-detect projects on startup and pre-select first VS Code one
 (async () => {
   await createTab();
 
-  // Load initial pin state
+  // Load initial pin state and theme
   try {
     isPinned = await window.wotch.getPinned();
     updatePinButton();
+  } catch { /* ignore */ }
+  try {
+    const initSettings = await window.wotch.getSettings();
+    if (initSettings.theme) applyTheme(initSettings.theme);
   } catch { /* ignore */ }
 
   // Check platform and adapt UI accordingly
