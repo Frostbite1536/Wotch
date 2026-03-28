@@ -691,6 +691,8 @@
     select.setting-input option { background: var(--bg-solid); color: var(--text); }
 
     /* ── Position variants (left / right) ───────────────────── */
+
+    /* Left pill: anchored to left screen edge, rounded on right side */
     body.position-left #pill {
       border-radius: 0 18px 18px 0;
       border: 1px solid var(--border);
@@ -698,10 +700,11 @@
       flex-direction: column;
       width: 100%;
       height: 100%;
-      padding: 8px 0;
+      padding: 6px 0;
+      gap: 6px;
     }
-    body.position-left #pill .arrow { transform: rotate(-90deg); }
 
+    /* Right pill: anchored to right screen edge, rounded on left side */
     body.position-right #pill {
       border-radius: 18px 0 0 18px;
       border: 1px solid var(--border);
@@ -709,17 +712,28 @@
       flex-direction: column;
       width: 100%;
       height: 100%;
-      padding: 8px 0;
+      padding: 6px 0;
+      gap: 6px;
     }
-    body.position-right #pill .arrow { transform: rotate(90deg); }
 
-    /* Side-positioned pill label: rotate text vertical */
-    body.position-left #pill .label,
+    /* Side-positioned pill label: vertical text */
+    body.position-left #pill .label {
+      writing-mode: vertical-lr;
+      text-orientation: mixed;
+      max-width: none;
+      max-height: 120px;
+      white-space: normal;
+      text-overflow: clip;
+      overflow: hidden;
+    }
     body.position-right #pill .label {
       writing-mode: vertical-rl;
       text-orientation: mixed;
       max-width: none;
       max-height: 120px;
+      white-space: normal;
+      text-overflow: clip;
+      overflow: hidden;
     }
 
     /* Side-positioned expanded panel */
@@ -727,11 +741,31 @@
       border-radius: 0 14px 14px 0;
       border: 1px solid rgba(168, 139, 250, 0.2);
       border-left: none;
+      box-shadow: 25px 0 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(168, 139, 250, 0.08);
     }
     body.position-right #panel {
       border-radius: 14px 0 0 14px;
       border: 1px solid rgba(168, 139, 250, 0.2);
       border-right: none;
+      box-shadow: -25px 0 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(168, 139, 250, 0.08);
+    }
+
+    /* Side-positioned search bar: same top-anchored position works, just fix border */
+    body.position-left #search-bar,
+    body.position-right #search-bar {
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+    }
+
+    /* Side-positioned bottom bar: wrap shortcuts when panel is narrow */
+    body.position-left .shortcuts,
+    body.position-right .shortcuts {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    body.position-left .shortcut span,
+    body.position-right .shortcut span {
+      display: none;
     }
 
     /* Side-positioned resize handle: vertical drag on the side edge */
@@ -1075,6 +1109,17 @@
               <option value="green">Green</option>
             </select>
           </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Notch position</div>
+              <div class="setting-hint">Which screen edge the notch sits on</div>
+            </div>
+            <select class="setting-input setting-input-wide" id="set-position">
+              <option value="top">Top (horizontal)</option>
+              <option value="left">Left (vertical)</option>
+              <option value="right">Right (vertical)</option>
+            </select>
+          </div>
         </div>
 
         <div class="settings-section">
@@ -1138,21 +1183,6 @@
               <div class="setting-hint">Type "claude" in new tabs</div>
             </div>
             <button class="setting-toggle" id="set-auto-claude"></button>
-          </div>
-        </div>
-
-        <div class="settings-section">
-          <div class="settings-section-title">Position</div>
-          <div class="setting-row">
-            <div>
-              <div class="setting-label">Notch position</div>
-              <div class="setting-hint">Where the notch sits on screen</div>
-            </div>
-            <select class="setting-input setting-input-wide" id="set-position">
-              <option value="top">Top (horizontal)</option>
-              <option value="left">Left (vertical)</option>
-              <option value="right">Right (vertical)</option>
-            </select>
           </div>
         </div>
 

@@ -630,9 +630,15 @@ window.wotch.onPinState((pinned) => {
 });
 
 // ── Position handling ──────────────────────────────────
+const pillArrow = document.querySelector("#pill .arrow");
+const ARROW_CHARS = { top: "\u25BE", left: "\u25B8", right: "\u25C2" }; // ▾ ▸ ◂
+
 function applyPosition(position) {
+  const pos = position || "top";
   document.body.classList.remove("position-top", "position-left", "position-right");
-  document.body.classList.add(`position-${position || "top"}`);
+  document.body.classList.add(`position-${pos}`);
+  // Update arrow to point toward screen interior
+  if (pillArrow) pillArrow.textContent = ARROW_CHARS[pos] || ARROW_CHARS.top;
 }
 
 window.wotch.onPositionChanged((position) => {
