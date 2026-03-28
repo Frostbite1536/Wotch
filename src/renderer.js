@@ -1,6 +1,6 @@
-import { Terminal } from "../node_modules/@xterm/xterm/lib/xterm.mjs";
-import { FitAddon } from "../node_modules/@xterm/addon-fit/lib/addon-fit.mjs";
-import { SearchAddon } from "../node_modules/@xterm/addon-search/lib/addon-search.mjs";
+import { Terminal } from "../node_modules/@xterm/xterm/lib/xterm.js";
+import { FitAddon } from "../node_modules/@xterm/addon-fit/lib/addon-fit.js";
+import { SearchAddon } from "../node_modules/@xterm/addon-search/lib/addon-search.js";
 
 // ── State ──────────────────────────────────────────────
 let tabs = [];          // { id, name, term, fitAddon, searchAddon, el, cwd }
@@ -762,7 +762,7 @@ const diffOverlay = document.getElementById("diff-overlay");
 const diffContent = document.getElementById("diff-content");
 
 function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 async function showDiff(mode) {

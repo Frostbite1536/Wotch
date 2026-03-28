@@ -111,6 +111,7 @@ let ptyProcesses = new Map(); // tabId → pty
 // ── Window positioning ──────────────────────────────────────────────
 function getTargetDisplay() {
   const displays = screen.getAllDisplays();
+  if (displays.length === 0) return screen.getPrimaryDisplay();
   const idx = Math.min(settings.displayIndex || 0, displays.length - 1);
   return displays[idx];
 }
@@ -386,7 +387,7 @@ function createPty(tabId, cwd) {
 // Parses terminal output to detect Claude Code's state and generate
 // short descriptions of what it's doing.
 //
-// States: idle, thinking, working, tool_use, waiting, done, error
+// States: idle, thinking, working, waiting, done, error
 //
 class ClaudeStatusDetector {
   constructor() {
@@ -684,7 +685,7 @@ class ClaudeStatusDetector {
         const prev = this.previousStates.get(tabId) || "idle";
         if ((prev === "thinking" || prev === "working") &&
             (tab.state === "done" || tab.state === "error")) {
-          if (mainWindow && !mainWindow.isFocused()) {
+          if (mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
             try {
               const notif = new Notification({
                 title: "Wotch",
@@ -1263,6 +1264,7 @@ ipcMain.on("resize-window", (_event, height) => {
   settings.expandedHeight = clamped;
   const bounds = getExpandedBounds();
   mainWindow.setBounds(bounds, false);
+  saveSettings(settings);
 });
 
 // ── Electron CLI flags for Wayland support ─────────────────────────
@@ -1327,6 +1329,7 @@ app.whenReady().then(() => {
     const displays = screen.getAllDisplays();
     if (settings.displayIndex >= displays.length) {
       settings.displayIndex = 0;
+      saveSettings(settings);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
       }
