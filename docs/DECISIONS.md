@@ -61,3 +61,14 @@ Significant architectural and product decisions, recorded for future context.
 **Decision:** Add a `displayIndex` setting and `getTargetDisplay()` helper that selects from `screen.getAllDisplays()`, with fallback to primary on disconnect.
 **Context:** Users with multiple monitors may want Wotch on a secondary display. The original code hardcoded `screen.getPrimaryDisplay()` in all positioning functions.
 **Trade-off:** Adds complexity to positioning logic. All `getPillBounds`/`getExpandedBounds` calls now add `display.bounds.x/y` offsets. Risk of positioning bugs on unusual multi-monitor arrangements.
+
+## 2026-03-28: Customizable Notch Position (Top / Left / Right)
+
+**Decision:** Add a `position` setting (`"top"`, `"left"`, `"right"`) that controls which screen edge the pill and expanded panel anchor to.
+**Context:** Users wanted flexibility in where the notch appears — some prefer a vertical sidebar-style pill on the left or right edge rather than the default top-center placement.
+**Implementation:**
+- Main process: `getPillBounds()` and `getExpandedBounds()` calculate position based on `display.workArea` (not `display.bounds`) to correctly account for taskbars and menu bars on all platforms. Left/right pill dimensions are swapped (width↔height). Expanded panel height is clamped to work area height.
+- Mouse tracking: Each position extends its edge-slam zone to the physical display boundary (`display.bounds`) so users can slam the cursor to the edge to trigger hover-reveal.
+- Renderer: Position changes apply a CSS class (`position-left`, `position-right`) to `<body>`, which overrides pill/panel border-radius, flex direction, border sides, and resize handle orientation.
+- IPC: A `position-changed` event notifies the renderer when position changes.
+**Trade-off:** Adds ~60 lines of CSS position variants and ~50 lines of branching logic in bounds calculations. The CSS approach (class switching) keeps visual changes declarative and avoids JS-driven style manipulation.

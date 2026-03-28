@@ -108,6 +108,8 @@
 - [x] Checkpoint diff viewer (color-coded git diff overlay)
 - [x] Claude Code auto-launch in new tabs (optional setting)
 
+- [x] Customizable notch position (top, left, right) with position-aware hover zones and resize handles
+
 ### Deferred
 - [ ] Split panes within a tab — high complexity, deferred until simpler features are stable
 - [ ] Plugin/extension system — significant security implications, deferred indefinitely
@@ -143,3 +145,4 @@
 | 2026-03-28 | Use CSS custom properties for theming | Allows runtime theme switching without rebuilding; themes are just variable maps |
 | 2026-03-28 | Defer split panes and plugin system | Split panes require pane tree data structure and focus tracking (~4hr effort); plugins have security implications (main process access) |
 | 2026-03-28 | Use `execFileSync` for git commit instead of `execSync` | Prevents shell injection via checkpoint messages (INV-SEC-004) |
+| 2026-03-28 | Add customizable notch position (top/left/right) | Users requested sidebar-style placement; uses workArea for accurate positioning across platforms |

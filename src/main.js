@@ -127,22 +127,21 @@ function getTopOffset() {
 
 function getPillBounds() {
   const display = getTargetDisplay();
-  const screenW = display.workAreaSize.width;
-  const screenH = display.workAreaSize.height;
+  const wa = display.workArea; // { x, y, width, height } — excludes taskbar/menu bar
   const pos = settings.position || "top";
 
   if (pos === "left") {
     return {
-      x: display.bounds.x,
-      y: display.bounds.y + Math.round((screenH - settings.pillWidth) / 2),
+      x: wa.x,
+      y: wa.y + Math.round((wa.height - settings.pillWidth) / 2),
       width: settings.pillHeight,
       height: settings.pillWidth,
     };
   }
   if (pos === "right") {
     return {
-      x: display.bounds.x + screenW - settings.pillHeight,
-      y: display.bounds.y + Math.round((screenH - settings.pillWidth) / 2),
+      x: wa.x + wa.width - settings.pillHeight,
+      y: wa.y + Math.round((wa.height - settings.pillWidth) / 2),
       width: settings.pillHeight,
       height: settings.pillWidth,
     };
@@ -150,7 +149,7 @@ function getPillBounds() {
   // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((screenW - settings.pillWidth) / 2),
+    x: display.bounds.x + Math.round((wa.width - settings.pillWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.pillWidth,
     height: settings.pillHeight,
@@ -159,30 +158,31 @@ function getPillBounds() {
 
 function getExpandedBounds() {
   const display = getTargetDisplay();
-  const screenW = display.workAreaSize.width;
-  const screenH = display.workAreaSize.height;
+  const wa = display.workArea;
   const pos = settings.position || "top";
 
   if (pos === "left") {
+    const clampedH = Math.min(settings.expandedHeight, wa.height);
     return {
-      x: display.bounds.x,
-      y: display.bounds.y + Math.round((screenH - settings.expandedHeight) / 2),
+      x: wa.x,
+      y: wa.y + Math.round((wa.height - clampedH) / 2),
       width: settings.expandedWidth,
-      height: settings.expandedHeight,
+      height: clampedH,
     };
   }
   if (pos === "right") {
+    const clampedH = Math.min(settings.expandedHeight, wa.height);
     return {
-      x: display.bounds.x + screenW - settings.expandedWidth,
-      y: display.bounds.y + Math.round((screenH - settings.expandedHeight) / 2),
+      x: wa.x + wa.width - settings.expandedWidth,
+      y: wa.y + Math.round((wa.height - clampedH) / 2),
       width: settings.expandedWidth,
-      height: settings.expandedHeight,
+      height: clampedH,
     };
   }
   // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((screenW - settings.expandedWidth) / 2),
+    x: display.bounds.x + Math.round((wa.width - settings.expandedWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.expandedWidth,
     height: settings.expandedHeight,
@@ -349,24 +349,24 @@ function startMouseTracking() {
     const winBounds = mainWindow.getBounds();
 
     // Check if mouse is within the window bounds + padding.
-    // Edge-slam: extend detection to screen edge for the position's anchor side.
+    // Edge-slam: extend detection to the target display edge for the anchor side.
     const pad = settings.hoverPadding;
     const pos = settings.position || "top";
+    const display = getTargetDisplay();
 
     let inZoneX, inZoneY;
 
     if (pos === "left") {
-      // Extend left edge to 0 for slam-to-left activation
+      // Extend left edge to display boundary for slam-to-left activation
       inZoneX =
-        mousePos.x >= 0 &&
+        mousePos.x >= display.bounds.x &&
         mousePos.x <= winBounds.x + winBounds.width + pad;
       inZoneY =
         mousePos.y >= winBounds.y - pad &&
         mousePos.y <= winBounds.y + winBounds.height + pad;
     } else if (pos === "right") {
-      // Extend right edge to screen edge for slam-to-right activation
-      const display = getTargetDisplay();
-      const screenRight = display.bounds.x + display.workAreaSize.width;
+      // Extend right edge to physical display boundary for slam-to-right activation
+      const screenRight = display.bounds.x + display.bounds.width;
       inZoneX =
         mousePos.x >= winBounds.x - pad &&
         mousePos.x <= screenRight;
@@ -374,12 +374,13 @@ function startMouseTracking() {
         mousePos.y >= winBounds.y - pad &&
         mousePos.y <= winBounds.y + winBounds.height + pad;
     } else {
-      // "top" — extend to top of screen for slam-up activation
+      // "top" — extend to display top edge for slam-up activation
+      const screenTop = display.bounds.y;
       inZoneX =
         mousePos.x >= winBounds.x - pad &&
         mousePos.x <= winBounds.x + winBounds.width + pad;
       inZoneY =
-        mousePos.y >= Math.max(0, winBounds.y - pad) &&
+        mousePos.y >= Math.max(screenTop, winBounds.y - pad) &&
         mousePos.y <= winBounds.y + winBounds.height + pad;
     }
 
