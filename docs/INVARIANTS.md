@@ -55,6 +55,29 @@ Git checkpoint operations must never force-push, reset, rebase, or modify existi
 
 **Enforcement:** Only use `git add` and `git commit` in checkpoint code.
 
+### INV-SEC-005: SSH Credential Handling
+Private key contents, passwords, and key passphrases must never be stored in settings, logs, or the renderer process state. They exist transiently in main process memory during connection establishment only. SSH profiles store only the key file *path*, never key contents. Passwords are prompted each time.
+
+**Rationale:** Storing credentials on disk would create a high-value target. Transient memory exposure during connection is inherent to the architecture (renderer can't access ssh2 directly per INV-SEC-001).
+
+**Enforcement:** Code review. `sshProfiles` array must never contain `password` or `privateKey` fields. The `save-settings` handler preserves `sshProfiles` via dedicated handlers, never from renderer-supplied settings objects.
+
+## Data Integrity (continued)
+
+### INV-DATA-004: SSH Session Map Consistency
+Every entry in the `sshSessions` Map must correspond to a live SSH connection. When a shell channel closes, the entry must be cleaned up. When a tab is killed or the app quits, SSH clients must be ended and channels closed. Mirrors INV-DATA-002 for PTY processes.
+
+**Rationale:** Orphaned SSH connections leak network sockets and can leave remote shells running.
+
+**Enforcement:** Cleanup in stream close handler, pty-kill handler, and app will-quit handler.
+
+### INV-DATA-005: sshProfiles Isolation
+`settings.sshProfiles` must only be modified through the `ssh-save-profile` and `ssh-delete-profile` IPC handlers. The general `save-settings` handler must preserve the existing `sshProfiles` value (not overwrite from renderer-supplied objects).
+
+**Rationale:** The renderer's `debouncedSave()` does not include `sshProfiles` in its payload. Without this invariant, every settings save would silently delete all SSH profiles.
+
+**Enforcement:** The `save-settings` handler stores `settings.sshProfiles` before `Object.assign` and restores it after.
+
 ## UI / UX
 
 ### INV-UX-001: Always-on-Top
@@ -109,3 +132,4 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 | 2026-03-28 | INV-SEC-004 | Git commit now uses execFileSync with args array | Eliminates shell injection in checkpoint messages |
 | 2026-03-28 | INV-UX-002 | Updated for multi-monitor support | Pill can now target any display, falls back to primary on disconnect |
 | 2026-03-28 | INV-UX-002 | Updated for customizable position | Pill can sit on top, left, or right edge; uses workArea for accurate placement; clamps expanded panel to screen bounds |
+| 2026-03-28 | INV-SEC-005, INV-DATA-004, INV-DATA-005 | Added for SSH support | SSH credentials never persisted; SSH session map follows same cleanup pattern as PTY map; sshProfiles isolated from general settings saves |

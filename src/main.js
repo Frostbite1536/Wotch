@@ -1,9 +1,11 @@
-const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require("electron");
 const path = require("path");
 const pty = require("node-pty");
 const os = require("os");
 const fs = require("fs");
+const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
+const { Client: SSHClient } = require("ssh2");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -72,6 +74,7 @@ const DEFAULT_SETTINGS = {
   autoLaunchClaude: false,
   displayIndex: 0,           // 0 = primary display
   position: "top",           // "top", "left", or "right"
+  sshProfiles: [],           // saved SSH connection profiles
 };
 
 function loadSettings() {
@@ -101,6 +104,29 @@ function saveSettings(settings) {
 
 let settings = loadSettings();
 
+// ── Known hosts for SSH ────────────────────────────────────────────
+const KNOWN_HOSTS_FILE = path.join(SETTINGS_DIR, "known_hosts.json");
+
+function loadKnownHosts() {
+  try {
+    if (fs.existsSync(KNOWN_HOSTS_FILE)) {
+      return JSON.parse(fs.readFileSync(KNOWN_HOSTS_FILE, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveKnownHosts(hosts) {
+  try {
+    if (!fs.existsSync(SETTINGS_DIR)) {
+      fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    }
+    fs.writeFileSync(KNOWN_HOSTS_FILE, JSON.stringify(hosts, null, 2), "utf-8");
+  } catch (err) {
+    console.log("[wotch] Failed to save known hosts:", err.message);
+  }
+}
+
 let mainWindow = null;
 let tray = null;
 let isExpanded = false;
@@ -108,6 +134,9 @@ let isPinned = settings.pinned || false;
 let mousePoller = null;
 let collapseTimeout = null;
 let ptyProcesses = new Map(); // tabId → pty
+const sshSessions = new Map(); // tabId → { client, stream, profileId, authMethod, reconnectTimer }
+const pendingCredentials = new Map(); // tabId → { resolve, reject }
+const pendingHostVerify = new Map(); // tabId → { resolve }
 
 // ── Window positioning ──────────────────────────────────────────────
 function getTargetDisplay() {
@@ -448,6 +477,163 @@ function createPty(tabId, cwd) {
   ptyProcesses.set(tabId, ptyProc);
   claudeStatus.addTab(tabId);
   return tabId;
+}
+
+// ── SSH session management ─────────────────────────────────────────
+
+function sendToTab(tabId, text) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("pty-data", { tabId, data: text });
+  }
+}
+
+function requestCredential(tabId, type, prompt) {
+  return new Promise((resolve, reject) => {
+    pendingCredentials.set(tabId, { resolve, reject });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("ssh-credential-request", { tabId, type, prompt });
+    } else {
+      reject(new Error("Window not available"));
+    }
+  });
+}
+
+function requestHostVerify(tabId, host, port, fingerprint, isChanged) {
+  return new Promise((resolve) => {
+    pendingHostVerify.set(tabId, { resolve });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("ssh-host-verify", { tabId, host, port, fingerprint, isChanged });
+    } else {
+      resolve(false);
+    }
+  });
+}
+
+async function createSshSession(tabId, profileId, password) {
+  const profile = (settings.sshProfiles || []).find((p) => p.id === profileId);
+  if (!profile) throw new Error("SSH profile not found");
+
+  const client = new SSHClient();
+  const hostKey = `${profile.host}:${profile.port}`;
+
+  // Build connection options
+  const connectOpts = {
+    host: profile.host,
+    port: profile.port || 22,
+    username: profile.username,
+    readyTimeout: 10000,
+  };
+
+  // Auth setup
+  if (profile.authMethod === "key") {
+    try {
+      connectOpts.privateKey = fs.readFileSync(profile.keyPath, "utf-8");
+    } catch (err) {
+      throw new Error(`Failed to read key file: ${err.message}`);
+    }
+  } else {
+    if (!password) throw new Error("Password required");
+    connectOpts.password = password;
+  }
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+
+    // Host key verification
+    connectOpts.hostVerifier = async (key) => {
+      const fingerprint = crypto.createHash("sha256").update(key).digest("base64");
+      const knownHosts = loadKnownHosts();
+
+      if (knownHosts[hostKey] === fingerprint) return true;
+
+      const isChanged = hostKey in knownHosts;
+      const accepted = await requestHostVerify(tabId, profile.host, profile.port, fingerprint, isChanged);
+      if (accepted) {
+        knownHosts[hostKey] = fingerprint;
+        saveKnownHosts(knownHosts);
+        return true;
+      }
+      return false;
+    };
+
+    client.on("ready", () => {
+      client.shell({ term: "xterm-256color", cols: 80, rows: 24 }, (err, stream) => {
+        if (err) {
+          client.end();
+          if (!resolved) { resolved = true; reject(err); }
+          return;
+        }
+
+        stream.on("data", (data) => {
+          const str = data.toString();
+          sendToTab(tabId, str);
+          claudeStatus.feed(tabId, str);
+        });
+
+        stream.on("close", () => {
+          sendToTab(tabId, "\r\n\x1b[90m── SSH session closed ──\x1b[0m\r\n");
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
+          }
+
+          const session = sshSessions.get(tabId);
+          if (session) {
+            // Attempt reconnect for key-based auth (password was discarded)
+            if (session.authMethod === "key" && !session.userKilled) {
+              sendToTab(tabId, "\x1b[33mSSH connection lost. Reconnecting in 3s...\x1b[0m\r\n");
+              session.reconnectTimer = setTimeout(async () => {
+                try {
+                  sshSessions.delete(tabId);
+                  claudeStatus.removeTab(tabId);
+                  await createSshSession(tabId, profileId);
+                } catch (e) {
+                  sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
+                }
+              }, 3000);
+            } else if (session.authMethod === "password" && !session.userKilled) {
+              sendToTab(tabId, "\x1b[33mSSH connection lost. Open a new SSH tab to reconnect.\x1b[0m\r\n");
+            }
+          }
+
+          if (!session || session.userKilled) {
+            sshSessions.delete(tabId);
+            claudeStatus.removeTab(tabId);
+          }
+        });
+
+        sshSessions.set(tabId, {
+          client,
+          stream,
+          profileId,
+          authMethod: profile.authMethod,
+          reconnectTimer: null,
+          userKilled: false,
+        });
+        claudeStatus.addTab(tabId);
+
+        if (!resolved) { resolved = true; resolve({ tabId, type: "ssh" }); }
+      });
+    });
+
+    client.on("error", (err) => {
+      sendToTab(tabId, `\x1b[31mSSH Error: ${err.message}\x1b[0m\r\n`);
+      if (!resolved) { resolved = true; reject(err); }
+    });
+
+    // Handle passphrase prompt for encrypted keys
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      (async () => {
+        const responses = [];
+        for (const prompt of prompts) {
+          const credential = await requestCredential(tabId, "passphrase", prompt.prompt);
+          responses.push(credential || "");
+        }
+        finish(responses);
+      })();
+    });
+
+    client.connect(connectOpts);
+  });
 }
 
 // ── Claude Code Status Detection ────────────────────────────────────
@@ -1221,18 +1407,30 @@ ipcMain.handle("pty-create", (_event, { tabId, cwd }) => {
 
 ipcMain.on("pty-write", (_event, { tabId, data }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.write(data);
+  if (p) { p.write(data); return; }
+  const s = sshSessions.get(tabId);
+  if (s && s.stream) s.stream.write(data);
 });
 
 ipcMain.on("pty-resize", (_event, { tabId, cols, rows }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.resize(cols, rows);
+  if (p) { p.resize(cols, rows); return; }
+  const s = sshSessions.get(tabId);
+  if (s && s.stream) s.stream.setWindow(rows, cols, 0, 0);
 });
 
 ipcMain.on("pty-kill", (_event, { tabId }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.kill();
-  ptyProcesses.delete(tabId);
+  if (p) { p.kill(); ptyProcesses.delete(tabId); }
+  const s = sshSessions.get(tabId);
+  if (s) {
+    s.userKilled = true;
+    if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+    if (s.stream) s.stream.close();
+    if (s.client) s.client.end();
+    sshSessions.delete(tabId);
+  }
+  claudeStatus.removeTab(tabId);
 });
 
 ipcMain.handle("get-cwd", () => os.homedir());
@@ -1266,7 +1464,10 @@ ipcMain.handle("get-settings", () => ({ ...settings }));
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
   const prev = { ...settings };
+  // Preserve sshProfiles — managed exclusively via ssh-save-profile/ssh-delete-profile
+  const preservedProfiles = settings.sshProfiles;
   Object.assign(settings, newSettings);
+  settings.sshProfiles = preservedProfiles;
   const ok = saveSettings(settings);
 
   const positionChanged = prev.position !== settings.position;
@@ -1347,6 +1548,60 @@ ipcMain.on("resize-window", (_event, size) => {
   const bounds = getExpandedBounds();
   mainWindow.setBounds(bounds, false);
   saveSettings(settings);
+});
+
+// ── SSH IPC handlers ───────────────────────────────────────────────
+
+ipcMain.handle("ssh-connect", async (_event, { tabId, profileId, password }) => {
+  return createSshSession(tabId, profileId, password);
+});
+
+ipcMain.on("ssh-credential-response", (_event, { tabId, credential }) => {
+  const pending = pendingCredentials.get(tabId);
+  if (pending) {
+    pending.resolve(credential);
+    pendingCredentials.delete(tabId);
+  }
+});
+
+ipcMain.on("ssh-host-verify-response", (_event, { tabId, accepted }) => {
+  const pending = pendingHostVerify.get(tabId);
+  if (pending) {
+    pending.resolve(accepted);
+    pendingHostVerify.delete(tabId);
+  }
+});
+
+ipcMain.handle("ssh-save-profile", (_event, profile) => {
+  if (!profile.id) profile.id = crypto.randomUUID();
+  const idx = (settings.sshProfiles || []).findIndex((p) => p.id === profile.id);
+  if (idx >= 0) {
+    settings.sshProfiles[idx] = profile;
+  } else {
+    if (!settings.sshProfiles) settings.sshProfiles = [];
+    settings.sshProfiles.push(profile);
+  }
+  saveSettings(settings);
+  return profile;
+});
+
+ipcMain.handle("ssh-delete-profile", (_event, profileId) => {
+  settings.sshProfiles = (settings.sshProfiles || []).filter((p) => p.id !== profileId);
+  saveSettings(settings);
+  return true;
+});
+
+ipcMain.handle("ssh-list-profiles", () => {
+  return settings.sshProfiles || [];
+});
+
+ipcMain.handle("ssh-browse-key", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select SSH Private Key",
+    defaultPath: path.join(os.homedir(), ".ssh"),
+    properties: ["openFile", "showHiddenFiles"],
+  });
+  return result.canceled ? null : result.filePaths[0];
 });
 
 // ── Electron CLI flags for Wayland support ─────────────────────────
@@ -1457,6 +1712,12 @@ app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
+  for (const [, s] of sshSessions) {
+    if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+    if (s.stream) s.stream.close();
+    if (s.client) s.client.end();
+  }
+  sshSessions.clear();
 });
 
 app.on("window-all-closed", () => {

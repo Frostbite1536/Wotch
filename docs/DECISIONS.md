@@ -72,3 +72,20 @@ Significant architectural and product decisions, recorded for future context.
 - Renderer: Position changes apply a CSS class (`position-left`, `position-right`) to `<body>`, which overrides pill/panel border-radius, flex direction, border sides, and resize handle orientation.
 - IPC: A `position-changed` event notifies the renderer when position changes.
 **Trade-off:** Adds ~60 lines of CSS position variants and ~50 lines of branching logic in bounds calculations. The CSS approach (class switching) keeps visual changes declarative and avoids JS-driven style manipulation.
+
+## 2026-03-28: ssh2 Pure-JS Library for Remote Terminals
+
+**Decision:** Use the `ssh2` npm package (pure JavaScript SSH2 client) instead of shelling out to the system `ssh` CLI binary.
+**Context:** Users wanted to connect to remote VPS instances running Claude Code. Options were: (A) set `defaultShell` to an SSH command (works but limited), (B) shell out to `ssh` binary, or (C) use a programmatic SSH library.
+**Implementation:**
+- SSH sessions use a parallel data path alongside local PTY sessions. The `sshSessions` Map mirrors `ptyProcesses`. SSH shell channels produce the same byte stream as local PTYs, routed through the same `pty-data`/`pty-write`/`pty-resize` IPC channels. The renderer doesn't need to know the transport type.
+- Host key verification uses `~/.wotch/known_hosts.json` with user confirmation dialogs for new/changed keys.
+- Credentials (passwords, key passphrases) are prompted in the renderer, passed via IPC, used once, discarded. Never stored.
+- Connection profiles (host, port, username, auth method, key path) are stored in `settings.sshProfiles`, managed via dedicated IPC handlers isolated from general settings saves.
+**Trade-off:** Adds `ssh2` as a runtime dependency (pure JS, no native bindings, well-maintained). Adds ~150 lines to main.js, ~200 lines to renderer.js, and ~100 lines of HTML/CSS. The transparent transport approach means Claude status detection, tab management, and xterm.js integration all work identically for SSH tabs.
+
+## 2026-03-28: claudeStatus.removeTab in pty-kill Handler
+
+**Decision:** Add `claudeStatus.removeTab(tabId)` to the `pty-kill` IPC handler.
+**Context:** Pre-existing bug: the `pty-kill` handler at line 1232 didn't clean up Claude status tracking. Cleanup only happened in the PTY `onExit` callback, which may not fire if the process is force-killed. Discovered during SSH implementation when modifying the handler for dual PTY/SSH routing.
+**Trade-off:** None — strictly a bugfix. The call is idempotent (safe if `onExit` also fires).

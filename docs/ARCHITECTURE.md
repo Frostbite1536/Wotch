@@ -21,6 +21,15 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 │  │ - hotkey │  │ - kill   │  │ - idle timeouts   │  │
 │  └──────────┘  └──────────┘  └───────────────────┘  │
 │                                                      │
+│  ┌──────────┐                                        │
+│  │ SSH Mgr  │  Parallel transport to PTY Mgr.        │
+│  │ (Map)    │  ssh2 Client → shell channel → same    │
+│  │          │  pty-data/pty-write/pty-resize IPC.     │
+│  │ - connect│  Host key verify via known_hosts.json.  │
+│  │ - auth   │  Profiles stored in settings.           │
+│  │ - recon. │                                        │
+│  └──────────┘                                        │
+│                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 │  │ Settings │  │ Git Ops  │  │ Project           │  │
 │  │ (~/.wotch│  │          │  │ Detection         │  │
@@ -71,6 +80,7 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 | **Window Manager** | Creates frameless, transparent BrowserWindow. Manages pill/expanded states, position calculations (top/left/right), always-on-top behavior. Uses `display.workArea` for accurate placement that respects taskbars and menu bars. Handles platform-specific window types (dock on Linux). |
 | **Mouse Tracker** | Polls `screen.getCursorScreenPoint()` at configurable intervals. Detects hover-to-reveal zone with edge-slam activation (extends detection to the physical display edge for the pill's anchor side). Position-aware: adapts hover zones for top/left/right placement. Handles Wayland fallback (hotkey-only mode when cursor position is unavailable). |
 | **PTY Manager** | Spawns `node-pty` processes per tab. Routes data between PTY and renderer via IPC. Auto-detects shell (PowerShell/zsh/bash) per platform. |
+| **SSH Manager** | Manages `ssh2` Client connections per tab. Creates shell channels that produce the same byte stream as local PTYs, routed through the same `pty-data`/`pty-write`/`pty-resize` IPC channels. Handles host key verification (`~/.wotch/known_hosts.json`), credential prompting (password/passphrase via renderer dialog), and reconnection (auto for key auth, prompt for password auth). Connection profiles stored in `settings.sshProfiles`. |
 | **Claude Status Detector** | Class that parses ANSI-stripped terminal output against regex patterns to detect Claude Code's state (idle/thinking/working/waiting/done/error). Maintains per-tab state with idle timeouts. |
 | **Project Detection** | Discovers projects from VS Code, JetBrains, Xcode, Visual Studio configs and common dev directories. Identifies projects by marker files (.git, package.json, Cargo.toml, etc.). |
 | **Git Operations** | Creates checkpoint commits (`wotch-checkpoint-*`), reads git status (branch, changed files, checkpoint count), and generates diffs for the diff viewer. Uses `execFileSync` for commit messages (injection-safe). |
@@ -85,6 +95,7 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 
 Secure IPC bridge using `contextBridge.exposeInMainWorld`. Exposes the `window.wotch` API with:
 - PTY operations (create, write, resize, kill, onData, onExit)
+- SSH operations (connect, credential response, host key verify, profile CRUD, key file browse)
 - Expansion and pin state callbacks
 - Position change notifications
 - Claude status updates
@@ -108,7 +119,8 @@ HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). C
 - **Command palette**: Ctrl+Shift+P fuzzy-filtered command overlay
 - **Themes**: Dark, light, purple, green presets via CSS custom property swapping
 - **Position handling**: Applies CSS position classes (`position-top`, `position-left`, `position-right`) to `<body>` for layout adaptation
-- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude), display selector, shell
+- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude), display selector, shell, SSH connection profiles
+- **SSH UI**: Profile editor dialog, credential prompt (password/passphrase), host key verification dialog, new-tab menu with SSH profile quick-connect
 - **Drag to resize**: Bottom edge handle for live panel height adjustment (top position), side edge handle for width adjustment (left/right positions)
 
 ## Data Flow
@@ -116,8 +128,9 @@ HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). C
 ```
 User hovers pill edge → Mouse poller detects (position-aware zones) → expand() → setBounds() → send "expansion-state" to renderer
 Position changed → save-settings IPC → main repositions window → send "position-changed" → renderer applies CSS class
-User types in terminal → xterm.js onData → IPC "pty-write" → node-pty.write()
-PTY output → node-pty onData → IPC "pty-data" → xterm.js write() + ClaudeStatusDetector.feed()
+User types in terminal → xterm.js onData → IPC "pty-write" → node-pty.write() OR ssh2 stream.write()
+PTY/SSH output → node-pty onData / ssh2 stream data → IPC "pty-data" → xterm.js write() + ClaudeStatusDetector.feed()
+SSH connect → renderer createTab(sshProfile) → IPC "ssh-connect" → ssh2 Client.connect() → shell channel → same pty-data path
 Claude status change → broadcast() → IPC "claude-status" → renderer updates pill dot/label
 Ctrl+` pressed → globalShortcut → toggle() → expand or collapse
 Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands → return status
@@ -134,6 +147,7 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 | `@xterm/addon-search` | Terminal search | Find text in terminal scrollback (Ctrl+F) |
 | `@xterm/addon-web-links` | Clickable links | Makes URLs in terminal output clickable |
 | `electron-updater` | Auto-update | Checks GitHub Releases and installs updates on quit |
+| `ssh2` | SSH client | Pure-JS SSH2 client for remote terminal connections. No native bindings needed. |
 
 ## Key Design Decisions
 
@@ -157,7 +171,9 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 - **Preload bridge** — Only specific IPC channels are exposed via `contextBridge`. No arbitrary IPC.
 - **No remote content** — The app loads only local files (`loadFile`), never remote URLs.
 - **Shell execution** — PTY spawns the user's configured shell. Git checkpoint uses `execFileSync` with argument arrays (no shell interpolation). Other git operations use `execSync` with fixed command strings.
-- **Settings file** — Stored in user home directory with standard file permissions. No secrets stored.
+- **Settings file** — Stored in user home directory with standard file permissions. SSH profiles store only connection metadata (host, port, username, key path) — never passwords or key contents.
+- **SSH credential handling** — Passwords and key passphrases are prompted in the renderer, sent via IPC to the main process, used once for `ssh2.Client.connect()`, then discarded. They exist transiently in main process memory during the connection attempt but are never written to disk.
+- **SSH host key verification** — First-connect requires explicit user acceptance. Changed keys trigger a warning. Accepted fingerprints stored in `~/.wotch/known_hosts.json`.
 
 ## Performance Considerations
 
@@ -165,3 +181,4 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 - **Terminal buffer** — Claude status detector keeps a rolling 2000-char buffer per tab to avoid unbounded memory growth.
 - **Idle timeouts** — Status detector auto-transitions to idle after 5s of inactivity, preventing stale state display.
 - **PTY cleanup** — Processes are killed and removed from the map on tab close or window destroy.
+- **SSH cleanup** — SSH clients are ended and channels closed on tab close, reconnect timer cancellation, or app quit. Same invariant as PTY map (INV-DATA-004).

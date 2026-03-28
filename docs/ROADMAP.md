@@ -130,6 +130,7 @@
 - [ ] Screen share protection mode (blur/hide terminal content)
 - [ ] Code signing for all platforms
 - [x] Terminal tabs reordering via drag
+- [x] SSH remote terminal connections (ssh2 library, connection profiles, host key verification)
 - [ ] Custom keyboard shortcut bindings
 - [ ] Session persistence (restore tabs on restart)
 
@@ -146,3 +147,4 @@
 | 2026-03-28 | Defer split panes and plugin system | Split panes require pane tree data structure and focus tracking (~4hr effort); plugins have security implications (main process access) |
 | 2026-03-28 | Use `execFileSync` for git commit instead of `execSync` | Prevents shell injection via checkpoint messages (INV-SEC-004) |
 | 2026-03-28 | Add customizable notch position (top/left/right) | Users requested sidebar-style placement; uses workArea for accurate positioning across platforms |
+| 2026-03-28 | Add SSH remote terminal support via ssh2 | Users wanted to connect to remote VPS instances; ssh2 pure-JS library avoids platform-specific binary issues |

@@ -306,11 +306,13 @@ async function doCheckpoint() {
 btnCheckpoint.addEventListener("click", doCheckpoint);
 
 // ── Tab management ─────────────────────────────────────
-async function createTab(cwdOverride) {
+async function createTab(cwdOverride, sshProfile) {
   tabCounter++;
   const tabId = `tab-${tabCounter}`;
   const cwd = cwdOverride || (currentProject ? currentProject.path : await window.wotch.getCwd());
-  const name = currentProject ? currentProject.name : `Session ${tabCounter}`;
+  const name = sshProfile
+    ? `SSH: ${sshProfile.name}`
+    : (currentProject ? currentProject.name : `Session ${tabCounter}`);
 
   // Terminal instance
   const term = new Terminal({
@@ -335,26 +337,57 @@ async function createTab(cwdOverride) {
 
   term.open(containerEl);
 
-  // Create PTY
-  await window.wotch.createPty(tabId, cwd);
-
-  // Wire PTY ↔ xterm
+  // Wire PTY/SSH ↔ xterm (same IPC for both — main process routes transparently)
   term.onData((data) => window.wotch.writePty(tabId, data));
   term.onResize(({ cols, rows }) => window.wotch.resizePty(tabId, cols, rows));
 
-  const tab = { id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd };
+  const tab = {
+    id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd,
+    connectionType: sshProfile ? "ssh" : "local",
+    profileId: sshProfile ? sshProfile.id : null,
+  };
   tabs.push(tab);
 
   renderTabBar();
   activateTab(tabId);
 
-  // Auto-launch Claude if enabled
-  try {
-    const s = await window.wotch.getSettings();
-    if (s.autoLaunchClaude) {
-      setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+  if (sshProfile) {
+    // Ensure panel is expanded so credential/host-key dialogs are visible
+    if (!isExpanded) {
+      pillEl.click();
+      await new Promise((r) => setTimeout(r, 350));
     }
-  } catch { /* ignore */ }
+
+    term.writeln(`\x1b[36mConnecting to ${sshProfile.host}:${sshProfile.port}...\x1b[0m`);
+
+    let password = null;
+    if (sshProfile.authMethod === "password") {
+      password = await promptSshCredential(tabId, "password",
+        `Password for ${sshProfile.username}@${sshProfile.host}:`);
+      if (password === null) {
+        term.writeln("\x1b[31mConnection cancelled.\x1b[0m");
+        return tab;
+      }
+    }
+
+    try {
+      await window.wotch.sshConnect(tabId, sshProfile.id, password);
+      term.writeln("\x1b[32mConnected.\x1b[0m\r\n");
+    } catch (err) {
+      term.writeln(`\x1b[31mSSH connection failed: ${err.message}\x1b[0m`);
+    }
+  } else {
+    // Local PTY
+    await window.wotch.createPty(tabId, cwd);
+
+    // Auto-launch Claude if enabled
+    try {
+      const s = await window.wotch.getSettings();
+      if (s.autoLaunchClaude) {
+        setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+      }
+    } catch { /* ignore */ }
+  }
 
   return tab;
 }
@@ -411,7 +444,8 @@ function renderTabBar() {
     btn.draggable = true;
     btn.dataset.tabId = tab.id;
     const tabState = tabStatuses[tab.id]?.state || "idle";
-    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${tab.name}<span class="tab-close" data-close="${tab.id}">✕</span>`;
+    const isSSH = tab.connectionType === "ssh";
+    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${isSSH ? '<span class="ssh-badge">SSH</span>' : ""}${escapeHtml(tab.name)}<span class="tab-close" data-close="${tab.id}">✕</span>`;
     btn.addEventListener("click", (e) => {
       if (e.target.dataset.close) {
         closeTab(e.target.dataset.close);
@@ -560,7 +594,102 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(terminalsEl);
 
 // ── Event listeners ────────────────────────────────────
-btnAddTab.addEventListener("click", () => createTab());
+// ── New tab menu ──────────────────────────────────────
+const newTabMenu = document.getElementById("new-tab-menu");
+let newTabMenuOpen = false;
+
+function closeNewTabMenu() {
+  newTabMenu.classList.remove("open");
+  newTabMenuOpen = false;
+}
+
+async function showNewTabMenu(e) {
+  if (newTabMenuOpen) { closeNewTabMenu(); return; }
+
+  const profiles = await window.wotch.sshListProfiles();
+  newTabMenu.innerHTML = "";
+
+  // Local terminal option
+  const localOpt = document.createElement("div");
+  localOpt.className = "new-tab-option";
+  localOpt.textContent = "Local Terminal";
+  localOpt.addEventListener("click", () => { closeNewTabMenu(); createTab(); });
+  newTabMenu.appendChild(localOpt);
+
+  if (profiles.length > 0) {
+    const sep = document.createElement("div");
+    sep.className = "new-tab-separator";
+    newTabMenu.appendChild(sep);
+
+    for (const p of profiles) {
+      const opt = document.createElement("div");
+      opt.className = "new-tab-option";
+      opt.innerHTML = `<span class="ntm-badge">SSH</span>${escapeHtml(p.name)}`;
+      opt.addEventListener("click", () => { closeNewTabMenu(); createTab(null, p); });
+      newTabMenu.appendChild(opt);
+    }
+  }
+
+  // "Connect via SSH..." option
+  const sep2 = document.createElement("div");
+  sep2.className = "new-tab-separator";
+  newTabMenu.appendChild(sep2);
+  const sshOpt = document.createElement("div");
+  sshOpt.className = "new-tab-option";
+  sshOpt.style.color = "var(--accent)";
+  sshOpt.textContent = "Connect via SSH...";
+  sshOpt.addEventListener("click", () => { closeNewTabMenu(); showSshConnectDialog(); });
+  newTabMenu.appendChild(sshOpt);
+
+  // Position the menu near the + button
+  const rect = btnAddTab.getBoundingClientRect();
+  newTabMenu.style.top = `${rect.bottom + 4}px`;
+  newTabMenu.style.left = `${rect.left}px`;
+  newTabMenu.classList.add("open");
+  newTabMenuOpen = true;
+}
+
+function showSshConnectDialog() {
+  openSshEditor(null);
+  // After saving, also connect
+  const origHandler = document.getElementById("btn-ssh-save").onclick;
+  document.getElementById("btn-ssh-save").onclick = null;
+
+  const onSave = async () => {
+    const profile = {
+      id: editingProfileId || undefined,
+      name: document.getElementById("ssh-name").value.trim() || "Unnamed",
+      host: document.getElementById("ssh-host").value.trim(),
+      port: parseInt(document.getElementById("ssh-port").value) || 22,
+      username: document.getElementById("ssh-username").value.trim(),
+      authMethod: document.getElementById("ssh-auth-method").value,
+      keyPath: document.getElementById("ssh-key-path").value.trim(),
+    };
+    if (!profile.host || !profile.username) {
+      showToast("Host and username are required", "error");
+      return;
+    }
+    const saved = await window.wotch.sshSaveProfile(profile);
+    sshEditorOverlay.classList.remove("open");
+    renderSshProfiles();
+    createTab(null, saved);
+    // Restore normal save handler
+    document.getElementById("btn-ssh-save").removeEventListener("click", onSave);
+  };
+  document.getElementById("btn-ssh-save").addEventListener("click", onSave);
+}
+
+// Close menu when clicking outside
+document.addEventListener("click", (e) => {
+  if (newTabMenuOpen && !newTabMenu.contains(e.target) && e.target !== btnAddTab) {
+    closeNewTabMenu();
+  }
+});
+
+btnAddTab.addEventListener("click", (e) => {
+  e.stopPropagation();
+  showNewTabMenu(e);
+});
 
 // Keyboard shortcuts within the renderer
 document.addEventListener("keydown", (e) => {
@@ -591,7 +720,11 @@ document.addEventListener("keydown", (e) => {
     searchOpen ? closeSearch() : openSearch();
   }
   if (e.key === "Escape") {
-    if (paletteOpen) closePalette();
+    if (sshCredentialOverlay.classList.contains("open")) document.getElementById("btn-ssh-cred-cancel").click();
+    else if (sshHostkeyOverlay.classList.contains("open")) document.getElementById("btn-ssh-hostkey-reject").click();
+    else if (sshEditorOverlay.classList.contains("open")) sshEditorOverlay.classList.remove("open");
+    else if (newTabMenuOpen) closeNewTabMenu();
+    else if (paletteOpen) closePalette();
     else if (searchOpen) closeSearch();
     else if (diffOverlay.classList.contains("open")) closeDiff();
     else if (settingsOpen) closeSettings();
@@ -703,6 +836,7 @@ async function loadSettingsUI() {
         setDisplay.value = s.displayIndex || 0;
       } catch { /* ignore */ }
     }
+    renderSshProfiles();
   } catch { /* ignore */ }
 }
 
@@ -781,6 +915,172 @@ btnSettingsReset.addEventListener("click", async () => {
   } catch (err) {
     showToast("Failed to reset settings", "error");
   }
+});
+
+// ── SSH Settings Management ──────────────────────────
+const sshProfilesList = document.getElementById("ssh-profiles-list");
+const btnSshAdd = document.getElementById("btn-ssh-add");
+const sshEditorOverlay = document.getElementById("ssh-editor-overlay");
+const sshCredentialOverlay = document.getElementById("ssh-credential-overlay");
+const sshHostkeyOverlay = document.getElementById("ssh-hostkey-overlay");
+
+let editingProfileId = null;
+
+function escapeHtmlAttr(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function renderSshProfiles() {
+  const profiles = await window.wotch.sshListProfiles();
+  sshProfilesList.innerHTML = "";
+  if (profiles.length === 0) {
+    sshProfilesList.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:6px 0;">No saved connections</div>';
+    return;
+  }
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    row.innerHTML = `
+      <div style="min-width:0;flex:1;">
+        <div class="setting-label">${escapeHtml(p.name)}</div>
+        <div class="setting-hint">${escapeHtml(p.username)}@${escapeHtml(p.host)}:${p.port} (${p.authMethod})</div>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button class="settings-reset-btn ssh-edit-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;">Edit</button>
+        <button class="settings-reset-btn ssh-del-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;color:#f87171;">Delete</button>
+      </div>
+    `;
+    sshProfilesList.appendChild(row);
+  }
+  sshProfilesList.querySelectorAll(".ssh-edit-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openSshEditor(btn.dataset.id));
+  });
+  sshProfilesList.querySelectorAll(".ssh-del-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await window.wotch.sshDeleteProfile(btn.dataset.id);
+      renderSshProfiles();
+      showToast("SSH connection deleted", "info");
+    });
+  });
+}
+
+async function openSshEditor(profileId) {
+  editingProfileId = profileId || null;
+  document.getElementById("ssh-editor-title").textContent = profileId ? "Edit SSH Connection" : "New SSH Connection";
+  document.getElementById("ssh-name").value = "";
+  document.getElementById("ssh-host").value = "";
+  document.getElementById("ssh-port").value = "22";
+  document.getElementById("ssh-username").value = "";
+  document.getElementById("ssh-auth-method").value = "key";
+  document.getElementById("ssh-key-path").value = "";
+  document.getElementById("ssh-key-row").style.display = "";
+
+  if (profileId) {
+    const profiles = await window.wotch.sshListProfiles();
+    const p = profiles.find((x) => x.id === profileId);
+    if (p) {
+      document.getElementById("ssh-name").value = p.name;
+      document.getElementById("ssh-host").value = p.host;
+      document.getElementById("ssh-port").value = p.port;
+      document.getElementById("ssh-username").value = p.username;
+      document.getElementById("ssh-auth-method").value = p.authMethod;
+      document.getElementById("ssh-key-path").value = p.keyPath || "";
+      document.getElementById("ssh-key-row").style.display = p.authMethod === "key" ? "" : "none";
+    }
+  }
+  sshEditorOverlay.classList.add("open");
+}
+
+document.getElementById("ssh-auth-method").addEventListener("change", (e) => {
+  document.getElementById("ssh-key-row").style.display = e.target.value === "key" ? "" : "none";
+});
+
+document.getElementById("btn-ssh-browse-key").addEventListener("click", async () => {
+  const filePath = await window.wotch.sshBrowseKey();
+  if (filePath) document.getElementById("ssh-key-path").value = filePath;
+});
+
+document.getElementById("btn-ssh-save").addEventListener("click", async () => {
+  const profile = {
+    id: editingProfileId || undefined,
+    name: document.getElementById("ssh-name").value.trim() || "Unnamed",
+    host: document.getElementById("ssh-host").value.trim(),
+    port: parseInt(document.getElementById("ssh-port").value) || 22,
+    username: document.getElementById("ssh-username").value.trim(),
+    authMethod: document.getElementById("ssh-auth-method").value,
+    keyPath: document.getElementById("ssh-key-path").value.trim(),
+  };
+  if (!profile.host || !profile.username) {
+    showToast("Host and username are required", "error");
+    return;
+  }
+  await window.wotch.sshSaveProfile(profile);
+  sshEditorOverlay.classList.remove("open");
+  renderSshProfiles();
+  showToast(`SSH connection "${profile.name}" saved`, "success");
+});
+
+document.getElementById("btn-ssh-editor-close").addEventListener("click", () => sshEditorOverlay.classList.remove("open"));
+document.getElementById("btn-ssh-cancel").addEventListener("click", () => sshEditorOverlay.classList.remove("open"));
+btnSshAdd.addEventListener("click", () => openSshEditor(null));
+
+// ── SSH Credential Prompt ────────────────────────────
+const credentialResolves = new Map(); // tabId → resolve
+
+function promptSshCredential(tabId, type, promptText) {
+  return new Promise((resolve) => {
+    credentialResolves.set(tabId, resolve);
+    document.getElementById("ssh-credential-title").textContent =
+      type === "passphrase" ? "Key Passphrase" : "SSH Password";
+    document.getElementById("ssh-credential-prompt").textContent = promptText;
+    document.getElementById("ssh-credential-input").value = "";
+    document.getElementById("ssh-credential-input").dataset.tabId = tabId;
+    sshCredentialOverlay.classList.add("open");
+    setTimeout(() => document.getElementById("ssh-credential-input").focus(), 100);
+  });
+}
+
+document.getElementById("btn-ssh-cred-ok").addEventListener("click", () => {
+  const val = document.getElementById("ssh-credential-input").value;
+  const tabId = document.getElementById("ssh-credential-input").dataset.tabId;
+  sshCredentialOverlay.classList.remove("open");
+  const resolve = credentialResolves.get(tabId);
+  if (resolve) { resolve(val); credentialResolves.delete(tabId); }
+});
+
+document.getElementById("btn-ssh-cred-cancel").addEventListener("click", () => {
+  const tabId = document.getElementById("ssh-credential-input").dataset.tabId;
+  sshCredentialOverlay.classList.remove("open");
+  const resolve = credentialResolves.get(tabId);
+  if (resolve) { resolve(null); credentialResolves.delete(tabId); }
+});
+
+document.getElementById("ssh-credential-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById("btn-ssh-cred-ok").click(); }
+});
+
+window.wotch.onSshCredentialRequest(async ({ tabId, type, prompt }) => {
+  const credential = await promptSshCredential(tabId, type, prompt);
+  window.wotch.sshCredentialResponse(tabId, credential);
+});
+
+// ── SSH Host Key Verification ────────────────────────
+window.wotch.onSshHostVerify(({ tabId, host, port, fingerprint, isChanged }) => {
+  const msg = isChanged
+    ? `WARNING: Host key for ${host}:${port} has CHANGED! This could indicate a man-in-the-middle attack. Do you still want to connect?`
+    : `The authenticity of host '${host}:${port}' can't be established. Do you want to continue connecting?`;
+  document.getElementById("ssh-hostkey-message").textContent = msg;
+  document.getElementById("ssh-hostkey-fingerprint").textContent = fingerprint;
+  sshHostkeyOverlay.classList.add("open");
+
+  document.getElementById("btn-ssh-hostkey-accept").onclick = () => {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, true);
+  };
+  document.getElementById("btn-ssh-hostkey-reject").onclick = () => {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, false);
+  };
 });
 
 // ── Terminal search (Ctrl+F) ──────────────────────────
@@ -920,6 +1220,8 @@ const COMMANDS = [
   { name: "View Diff", shortcut: "", action: () => showDiff("last-checkpoint") },
   { name: "Open Settings", shortcut: "", action: () => openSettings() },
   { name: "Scan Projects", shortcut: "", action: () => loadProjects() },
+  { name: "SSH: Connect to Remote", shortcut: "", action: () => showSshConnectDialog() },
+  { name: "SSH: Manage Connections", shortcut: "", action: () => openSettings() },
 ];
 
 function openPalette() {
