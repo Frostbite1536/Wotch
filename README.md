@@ -8,7 +8,7 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 
 ## Features
 
-- **Notch-style pill** — small indicator at the top-center of your screen
+- **Notch-style pill** — small indicator at the top, left, or right edge of your screen
 - **Hover to reveal** — mouse over the pill to expand the terminal panel
 - **Global hotkey** — `Ctrl+`` ` (or `⌘+`` ` on Mac) toggles the panel from anywhere
 - **Multi-tab terminals** — run multiple shell sessions side by side, with per-tab status dots and drag-to-reorder
@@ -22,7 +22,8 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Live git status** — shows branch, changed files, and checkpoint count
 - **Claude finish notification** — system notification when Claude is done (while Wotch is in background)
 - **Auto-launch Claude** — optionally type `claude` in every new tab
-- **Drag to resize** — drag the bottom edge to resize the panel
+- **Customizable position** — place the notch at the top, left, or right edge of your screen
+- **Drag to resize** — drag the bottom edge (or side edge for left/right positions) to resize the panel
 - **Multiple monitor support** — choose which display to show the pill on
 - **macOS notch detection** — positions in the notch area on notch Macs, below the menu bar on others
 - **Always on top** — stays above all other windows
@@ -41,7 +42,7 @@ No Node.js or build tools required.
 
 ## Quick Start
 
-1. **Launch Wotch** — a small pill appears at the top-center of your screen
+1. **Launch Wotch** — a small pill appears at the top-center of your screen (configurable to left or right edge)
 2. **Hover the pill** (or press `Ctrl+`` `) — the terminal panel slides open
 3. **Open a project** — click the project dropdown to auto-detect your VS Code/JetBrains projects
 4. **Create a checkpoint** — press `Ctrl+S` before letting Claude make changes
@@ -53,7 +54,7 @@ No Node.js or build tools required.
 - Press `Ctrl+Shift+P` to open the command palette for quick access to all actions
 - Press `Ctrl+F` to search terminal output
 - Drag tabs to reorder them
-- Drag the bottom edge of the panel to resize it
+- Drag the bottom edge of the panel to resize it (or the side edge for left/right positions)
 - Click 📌 to pin the panel open while you work in other windows
 - Right-click the system tray icon to toggle or quit
 
@@ -109,7 +110,7 @@ npm start
 | `Ctrl+Shift+P` | `⌘Shift+P` | Command palette |
 | `Ctrl+P` | `⌘P` | Pin / unpin panel |
 | `Escape` | same | Close overlay / settings |
-| Hover top-center | same | Expand panel |
+| Hover pill edge | same | Expand panel |
 | Move mouse away | same | Collapse (unless pinned) |
 
 ## Building a distributable
@@ -158,34 +159,33 @@ wotch/
 
 ## How it works
 
+The pill can sit at the **top** (default), **left**, or **right** edge of your screen. Change the position in Settings > Position.
+
 ```
-┌─────────────────────────────────────────────┐
-│              Screen top edge                │
-│         ┌──────────────────┐                │
-│         │   ● claude  ▾   │  ← pill        │
-│         └──────────────────┘                │
-│                                             │
-│   On hover / Ctrl+` :                       │
-│         ┌──────────────────────────┐        │
-│         │ Session 1 │ Session 2  + │        │
-│         ├──────────────────────────┤        │
-│         │ $ claude "fix the bug"   │        │
-│         │ ● Reading auth.ts...     │        │
-│         │ ✓ Fixed!                 │        │
-│         │ $                        │        │
-│         ├──────────────────────────┤        │
-│         │ Ctrl+`  Ctrl+T  Ctrl+W  │        │
-│         └──────────────────────────┘        │
-│                                             │
-└─────────────────────────────────────────────┘
+ Top (default)              Left                     Right
+┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+│  ┌────────────┐  │   │┌─┐               │   │               ┌─┐│
+│  │ ● claude ▾ │  │   ││●│               │   │               │●││
+│  └────────────┘  │   ││c│               │   │               │c││
+│                  │   ││l│               │   │               │l││
+│   On hover or    │   ││a│               │   │               │a││
+│   Ctrl+` :       │   ││u│               │   │               │u││
+│  ┌────────────┐  │   ││d│               │   │               │d││
+│  │ Session 1 +│  │   ││e│               │   │               │e││
+│  ├────────────┤  │   │└─┘               │   │               └─┘│
+│  │ $ claude   │  │   │                  │   │                  │
+│  │ ● Working  │  │   │ Expands right →  │   │ ← Expands left  │
+│  │ ✓ Fixed!   │  │   │                  │   │                  │
+│  └────────────┘  │   └──────────────────┘   └──────────────────┘
+└──────────────────┘
 ```
 
 ### Architecture
 
-- **main.js** — Electron main process: window management, PTY processes, mouse tracking, global hotkey, Claude status detection, project scanning, git operations, auto-updater, system notifications, multi-monitor display management
-- **preload.js** — secure IPC bridge (24 methods) between main and renderer
-- **index.html** — renderer HTML and CSS: pill, panel, overlays, settings panel
-- **renderer.js** — renderer JavaScript: tab management, themes, terminal search, command palette, diff viewer, drag-to-resize, drag-to-reorder tabs, settings wiring
+- **main.js** — Electron main process: window management, position-aware pill/panel placement (top/left/right), PTY processes, mouse tracking with edge-slam activation, global hotkey, Claude status detection, project scanning, git operations, auto-updater, system notifications, multi-monitor display management
+- **preload.js** — secure IPC bridge (25 methods) between main and renderer
+- **index.html** — renderer HTML and CSS: pill, panel, overlays, settings panel, position-variant styles for left/right placement
+- **renderer.js** — renderer JavaScript: tab management, themes, terminal search, command palette, diff viewer, position-aware drag-to-resize, drag-to-reorder tabs, settings wiring
 
 ## Live Claude Code Status
 
@@ -242,7 +242,9 @@ Click the ⚙ gear in the bottom-right corner to open the settings panel. All ch
 
 **Appearance:** theme (dark, light, purple, green) — changes colors for the entire app including terminals.
 
-**Panel Dimensions:** expanded width/height, pill width — resize the panel to your liking. You can also drag the bottom edge of the panel to resize live.
+**Panel Dimensions:** expanded width/height, pill width — resize the panel to your liking. You can also drag the bottom edge of the panel to resize live (or the side edge for left/right positions).
+
+**Position:** place the notch at the top (horizontal, default), left (vertical), or right (vertical) edge of the screen. Left and right modes display the pill vertically and expand the panel from the corresponding screen edge.
 
 **Behavior:** collapse delay (how long before the panel closes on mouse leave), hover padding (how far from the pill the hover zone extends), start expanded (open panel on launch), remember pin state (persist pin across restarts), auto-launch Claude (type `claude` in every new tab).
 

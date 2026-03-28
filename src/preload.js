@@ -67,5 +67,29 @@ contextBridge.exposeInMainWorld("wotch", {
   getDisplays: () => ipcRenderer.invoke("get-displays"),
 
   // Window resize
-  resizeWindow: (height) => ipcRenderer.send("resize-window", height),
+  resizeWindow: (size) => ipcRenderer.send("resize-window", size),
+
+  // Position changes
+  onPositionChanged: (callback) => {
+    ipcRenderer.on("position-changed", (_e, position) => callback(position));
+  },
+
+  // ── SSH ──────────────────────────────────────────────
+  sshConnect: (tabId, profileId, password) =>
+    ipcRenderer.invoke("ssh-connect", { tabId, profileId, password }),
+  sshCredentialResponse: (tabId, credential) =>
+    ipcRenderer.send("ssh-credential-response", { tabId, credential }),
+  sshHostVerifyResponse: (tabId, accepted) =>
+    ipcRenderer.send("ssh-host-verify-response", { tabId, accepted }),
+  sshSaveProfile: (profile) => ipcRenderer.invoke("ssh-save-profile", profile),
+  sshDeleteProfile: (profileId) => ipcRenderer.invoke("ssh-delete-profile", profileId),
+  sshListProfiles: () => ipcRenderer.invoke("ssh-list-profiles"),
+  sshBrowseKey: () => ipcRenderer.invoke("ssh-browse-key"),
+
+  onSshCredentialRequest: (callback) => {
+    ipcRenderer.on("ssh-credential-request", (_e, payload) => callback(payload));
+  },
+  onSshHostVerify: (callback) => {
+    ipcRenderer.on("ssh-host-verify", (_e, payload) => callback(payload));
+  },
 });

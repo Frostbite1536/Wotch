@@ -1,9 +1,11 @@
-const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require("electron");
 const path = require("path");
 const pty = require("node-pty");
 const os = require("os");
 const fs = require("fs");
+const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
+const { Client: SSHClient } = require("ssh2");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -71,6 +73,8 @@ const DEFAULT_SETTINGS = {
   theme: "dark",
   autoLaunchClaude: false,
   displayIndex: 0,           // 0 = primary display
+  position: "top",           // "top", "left", or "right"
+  sshProfiles: [],           // saved SSH connection profiles
 };
 
 function loadSettings() {
@@ -90,7 +94,7 @@ function saveSettings(settings) {
     if (!fs.existsSync(SETTINGS_DIR)) {
       fs.mkdirSync(SETTINGS_DIR, { recursive: true });
     }
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), { encoding: "utf-8", mode: 0o600 });
     return true;
   } catch (err) {
     console.log("[wotch] Failed to save settings:", err.message);
@@ -100,6 +104,29 @@ function saveSettings(settings) {
 
 let settings = loadSettings();
 
+// ── Known hosts for SSH ────────────────────────────────────────────
+const KNOWN_HOSTS_FILE = path.join(SETTINGS_DIR, "known_hosts.json");
+
+function loadKnownHosts() {
+  try {
+    if (fs.existsSync(KNOWN_HOSTS_FILE)) {
+      return JSON.parse(fs.readFileSync(KNOWN_HOSTS_FILE, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveKnownHosts(hosts) {
+  try {
+    if (!fs.existsSync(SETTINGS_DIR)) {
+      fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    }
+    fs.writeFileSync(KNOWN_HOSTS_FILE, JSON.stringify(hosts, null, 2), { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    console.log("[wotch] Failed to save known hosts:", err.message);
+  }
+}
+
 let mainWindow = null;
 let tray = null;
 let isExpanded = false;
@@ -107,6 +134,9 @@ let isPinned = settings.pinned || false;
 let mousePoller = null;
 let collapseTimeout = null;
 let ptyProcesses = new Map(); // tabId → pty
+const sshSessions = new Map(); // tabId → { client, stream, profileId, authMethod, reconnectTimer }
+const pendingCredentials = new Map(); // tabId → { resolve, reject }
+const pendingHostVerify = new Map(); // tabId → { resolve }
 
 // ── Window positioning ──────────────────────────────────────────────
 function getTargetDisplay() {
@@ -126,10 +156,29 @@ function getTopOffset() {
 
 function getPillBounds() {
   const display = getTargetDisplay();
-  const screenW = display.workAreaSize.width;
+  const wa = display.workArea; // { x, y, width, height } — excludes taskbar/menu bar
+  const pos = settings.position || "top";
+
+  if (pos === "left") {
+    return {
+      x: wa.x,
+      y: wa.y + Math.round((wa.height - settings.pillWidth) / 2),
+      width: settings.pillHeight,
+      height: settings.pillWidth,
+    };
+  }
+  if (pos === "right") {
+    return {
+      x: wa.x + wa.width - settings.pillHeight,
+      y: wa.y + Math.round((wa.height - settings.pillWidth) / 2),
+      width: settings.pillHeight,
+      height: settings.pillWidth,
+    };
+  }
+  // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((screenW - settings.pillWidth) / 2),
+    x: wa.x + Math.round((wa.width - settings.pillWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.pillWidth,
     height: settings.pillHeight,
@@ -138,10 +187,33 @@ function getPillBounds() {
 
 function getExpandedBounds() {
   const display = getTargetDisplay();
-  const screenW = display.workAreaSize.width;
+  const wa = display.workArea;
+  const pos = settings.position || "top";
+
+  if (pos === "left") {
+    const clampedH = Math.min(settings.expandedHeight, wa.height);
+    const clampedW = Math.min(settings.expandedWidth, wa.width);
+    return {
+      x: wa.x,
+      y: wa.y + Math.round((wa.height - clampedH) / 2),
+      width: clampedW,
+      height: clampedH,
+    };
+  }
+  if (pos === "right") {
+    const clampedH = Math.min(settings.expandedHeight, wa.height);
+    const clampedW = Math.min(settings.expandedWidth, wa.width);
+    return {
+      x: wa.x + wa.width - clampedW,
+      y: wa.y + Math.round((wa.height - clampedH) / 2),
+      width: clampedW,
+      height: clampedH,
+    };
+  }
+  // "top" (default)
   const yOffset = getTopOffset();
   return {
-    x: display.bounds.x + Math.round((screenW - settings.expandedWidth) / 2),
+    x: wa.x + Math.round((wa.width - settings.expandedWidth) / 2),
     y: display.bounds.y + yOffset,
     width: settings.expandedWidth,
     height: settings.expandedHeight,
@@ -200,6 +272,7 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    mainWindow.webContents.send("position-changed", settings.position || "top");
     startMouseTracking();
   });
 
@@ -237,6 +310,7 @@ function collapse() {
   if (isPinned) return;
 
   collapseTimeout = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) { collapseTimeout = null; return; }
     isExpanded = false;
     const bounds = getPillBounds();
     mainWindow.setBounds(bounds, true);
@@ -246,6 +320,7 @@ function collapse() {
 }
 
 function toggle() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   // Toggle always works, even when pinned
   if (isExpanded) {
     if (collapseTimeout) clearTimeout(collapseTimeout);
@@ -307,17 +382,40 @@ function startMouseTracking() {
     const winBounds = mainWindow.getBounds();
 
     // Check if mouse is within the window bounds + padding.
-    // On macOS without a notch, also trigger when the cursor hits the
-    // very top of the screen (above the pill but at the menu bar edge),
-    // so you can activate by slamming the mouse upward.
+    // Edge-slam: extend detection to the target display edge for the anchor side.
     const pad = settings.hoverPadding;
-    const inZoneX =
-      mousePos.x >= winBounds.x - pad &&
-      mousePos.x <= winBounds.x + winBounds.width + pad;
+    const pos = settings.position || "top";
+    const display = getTargetDisplay();
 
-    const inZoneY =
-      mousePos.y >= Math.max(0, winBounds.y - pad) &&
-      mousePos.y <= winBounds.y + winBounds.height + pad;
+    let inZoneX, inZoneY;
+
+    if (pos === "left") {
+      // Extend left edge to display boundary for slam-to-left activation
+      inZoneX =
+        mousePos.x >= display.bounds.x &&
+        mousePos.x <= winBounds.x + winBounds.width + pad;
+      inZoneY =
+        mousePos.y >= winBounds.y - pad &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    } else if (pos === "right") {
+      // Extend right edge to physical display boundary for slam-to-right activation
+      const screenRight = display.bounds.x + display.bounds.width;
+      inZoneX =
+        mousePos.x >= winBounds.x - pad &&
+        mousePos.x <= screenRight;
+      inZoneY =
+        mousePos.y >= winBounds.y - pad &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    } else {
+      // "top" — extend to display top edge for slam-up activation
+      const screenTop = display.bounds.y;
+      inZoneX =
+        mousePos.x >= winBounds.x - pad &&
+        mousePos.x <= winBounds.x + winBounds.width + pad;
+      inZoneY =
+        mousePos.y >= Math.max(screenTop, winBounds.y - pad) &&
+        mousePos.y <= winBounds.y + winBounds.height + pad;
+    }
 
     const inZone = inZoneX && inZoneY;
 
@@ -381,6 +479,182 @@ function createPty(tabId, cwd) {
   ptyProcesses.set(tabId, ptyProc);
   claudeStatus.addTab(tabId);
   return tabId;
+}
+
+// ── SSH session management ─────────────────────────────────────────
+
+function sendToTab(tabId, text) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("pty-data", { tabId, data: text });
+  }
+}
+
+function requestCredential(tabId, type, prompt) {
+  return new Promise((resolve, reject) => {
+    pendingCredentials.set(tabId, { resolve, reject });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("ssh-credential-request", { tabId, type, prompt });
+    } else {
+      reject(new Error("Window not available"));
+    }
+  });
+}
+
+function requestHostVerify(tabId, host, port, fingerprint, isChanged) {
+  return new Promise((resolve) => {
+    pendingHostVerify.set(tabId, { resolve });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("ssh-host-verify", { tabId, host, port, fingerprint, isChanged });
+    } else {
+      resolve(false);
+    }
+  });
+}
+
+async function createSshSession(tabId, profileId, password) {
+  const profile = (settings.sshProfiles || []).find((p) => p.id === profileId);
+  if (!profile) throw new Error("SSH profile not found");
+
+  const client = new SSHClient();
+  const hostKey = `${profile.host}:${profile.port}`;
+
+  // Build connection options
+  const connectOpts = {
+    host: profile.host,
+    port: profile.port || 22,
+    username: profile.username,
+    readyTimeout: 10000,
+  };
+
+  // Auth setup
+  if (profile.authMethod === "key") {
+    try {
+      connectOpts.privateKey = fs.readFileSync(profile.keyPath, "utf-8");
+    } catch (err) {
+      throw new Error(`Failed to read key file: ${err.message}`);
+    }
+  } else {
+    if (!password) throw new Error("Password required");
+    connectOpts.password = password;
+  }
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+
+    // Host key verification — MUST use callback pattern (key, verify) => {}
+    // An async function returns a Promise (truthy), which ssh2 treats as verify(true),
+    // auto-accepting all host keys. Use verify() callback instead.
+    connectOpts.hostVerifier = (key, verify) => {
+      const fingerprint = crypto.createHash("sha256").update(key).digest("base64");
+      const knownHosts = loadKnownHosts();
+
+      if (knownHosts[hostKey] === fingerprint) {
+        verify(true);
+        return;
+      }
+
+      const isChanged = hostKey in knownHosts;
+      requestHostVerify(tabId, profile.host, profile.port, fingerprint, isChanged).then((accepted) => {
+        if (accepted) {
+          knownHosts[hostKey] = fingerprint;
+          saveKnownHosts(knownHosts);
+        }
+        verify(accepted);
+      });
+    };
+
+    client.on("ready", () => {
+      client.shell({ term: "xterm-256color", cols: 80, rows: 24 }, (err, stream) => {
+        if (err) {
+          client.end();
+          if (!resolved) { resolved = true; reject(err); }
+          return;
+        }
+
+        stream.on("data", (data) => {
+          const str = data.toString();
+          sendToTab(tabId, str);
+          claudeStatus.feed(tabId, str);
+        });
+
+        stream.on("close", () => {
+          sendToTab(tabId, "\r\n\x1b[90m── SSH session closed ──\x1b[0m\r\n");
+
+          const session = sshSessions.get(tabId);
+          if (session && session.authMethod === "key" && !session.userKilled) {
+            // Attempt reconnect for key-based auth (password was discarded)
+            sendToTab(tabId, "\x1b[33mSSH connection lost. Reconnecting in 3s...\x1b[0m\r\n");
+            session.reconnectTimer = setTimeout(async () => {
+              try {
+                sshSessions.delete(tabId);
+                claudeStatus.removeTab(tabId);
+                await createSshSession(tabId, profileId);
+              } catch (e) {
+                sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send("pty-exit", { tabId, exitCode: 1 });
+                }
+              }
+            }, 3000);
+          } else if (session && session.authMethod === "password" && !session.userKilled) {
+            // Password-auth: can't auto-reconnect (password was discarded)
+            sendToTab(tabId, "\x1b[33mSSH connection lost. Open a new SSH tab to reconnect.\x1b[0m\r\n");
+            sshSessions.delete(tabId);
+            claudeStatus.removeTab(tabId);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
+            }
+          } else {
+            // User-killed or no session — final cleanup
+            sshSessions.delete(tabId);
+            claudeStatus.removeTab(tabId);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("pty-exit", { tabId, exitCode: 0 });
+            }
+          }
+        });
+
+        sshSessions.set(tabId, {
+          client,
+          stream,
+          profileId,
+          authMethod: profile.authMethod,
+          reconnectTimer: null,
+          userKilled: false,
+        });
+        claudeStatus.addTab(tabId);
+
+        if (!resolved) { resolved = true; resolve({ tabId, type: "ssh" }); }
+      });
+    });
+
+    client.on("error", (err) => {
+      sendToTab(tabId, `\x1b[31mSSH Error: ${err.message}\x1b[0m\r\n`);
+      // Clean up pending credential/host-verify promises for this tab
+      const pc = pendingCredentials.get(tabId);
+      if (pc) { pc.reject(err); pendingCredentials.delete(tabId); }
+      const ph = pendingHostVerify.get(tabId);
+      if (ph) { ph.resolve(false); pendingHostVerify.delete(tabId); }
+      if (!resolved) { resolved = true; reject(err); }
+    });
+
+    // Handle passphrase prompt for encrypted keys
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      (async () => {
+        const responses = [];
+        for (const prompt of prompts) {
+          const credential = await requestCredential(tabId, "passphrase", prompt.prompt);
+          responses.push(credential || "");
+        }
+        finish(responses);
+      })().catch((err) => {
+        sendToTab(tabId, `\x1b[31mKeyboard-interactive auth failed: ${err.message}\x1b[0m\r\n`);
+        finish([]);
+      });
+    });
+
+    client.connect(connectOpts);
+  });
 }
 
 // ── Claude Code Status Detection ────────────────────────────────────
@@ -716,7 +990,7 @@ class ClaudeStatusDetector {
 const claudeStatus = new ClaudeStatusDetector();
 
 // Also detect idle timeout — if no output for 5s while in thinking/working, might be done
-setInterval(() => {
+const idleCheckInterval = setInterval(() => {
   const now = Date.now();
   for (const [tabId, tab] of claudeStatus.tabs) {
     if ((tab.state === "thinking" || tab.state === "working") && now - tab.lastActivity > 5000) {
@@ -1154,18 +1428,35 @@ ipcMain.handle("pty-create", (_event, { tabId, cwd }) => {
 
 ipcMain.on("pty-write", (_event, { tabId, data }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.write(data);
+  if (p) { p.write(data); return; }
+  const s = sshSessions.get(tabId);
+  if (s && s.stream) s.stream.write(data);
 });
 
 ipcMain.on("pty-resize", (_event, { tabId, cols, rows }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.resize(cols, rows);
+  if (p) { p.resize(cols, rows); return; }
+  const s = sshSessions.get(tabId);
+  if (s && s.stream) s.stream.setWindow(rows, cols, 0, 0);
 });
 
 ipcMain.on("pty-kill", (_event, { tabId }) => {
   const p = ptyProcesses.get(tabId);
-  if (p) p.kill();
-  ptyProcesses.delete(tabId);
+  if (p) { p.kill(); ptyProcesses.delete(tabId); }
+  const s = sshSessions.get(tabId);
+  if (s) {
+    s.userKilled = true;
+    if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+    if (s.stream) s.stream.close();
+    if (s.client) s.client.end();
+    sshSessions.delete(tabId);
+  }
+  // Clean up any pending credential/host-verify promises for this tab
+  const pc = pendingCredentials.get(tabId);
+  if (pc) { pc.reject(new Error("Tab closed")); pendingCredentials.delete(tabId); }
+  const ph = pendingHostVerify.get(tabId);
+  if (ph) { ph.resolve(false); pendingHostVerify.delete(tabId); }
+  claudeStatus.removeTab(tabId);
 });
 
 ipcMain.handle("get-cwd", () => os.homedir());
@@ -1199,11 +1490,21 @@ ipcMain.handle("get-settings", () => ({ ...settings }));
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
   const prev = { ...settings };
+  // Preserve sshProfiles — managed exclusively via ssh-save-profile/ssh-delete-profile
+  const preservedProfiles = settings.sshProfiles;
   Object.assign(settings, newSettings);
+  settings.sshProfiles = preservedProfiles;
   const ok = saveSettings(settings);
 
+  const positionChanged = prev.position !== settings.position;
+
+  // If position changed, reposition the window and notify renderer
+  if (positionChanged && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+    mainWindow.webContents.send("position-changed", settings.position || "top");
+  }
   // If dimensions changed and we're expanded, re-apply bounds
-  if (isExpanded && mainWindow && (
+  else if (isExpanded && mainWindow && (
     prev.expandedWidth !== settings.expandedWidth ||
     prev.expandedHeight !== settings.expandedHeight
   )) {
@@ -1214,13 +1515,16 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
 });
 
 ipcMain.handle("reset-settings", () => {
+  const preservedProfiles = settings.sshProfiles;
   settings = { ...DEFAULT_SETTINGS };
+  settings.sshProfiles = preservedProfiles;
   saveSettings(settings);
   isPinned = false;
-  if (isExpanded && mainWindow) {
-    mainWindow.setBounds(getExpandedBounds(), true);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+    mainWindow.webContents.send("pin-state", false);
+    mainWindow.webContents.send("position-changed", settings.position || "top");
   }
-  mainWindow.webContents.send("pin-state", false);
   return { ...settings };
 });
 
@@ -1258,13 +1562,82 @@ ipcMain.handle("get-displays", () => {
 });
 
 // Window resize (from drag handle)
-ipcMain.on("resize-window", (_event, height) => {
+ipcMain.on("resize-window", (_event, size) => {
   if (!mainWindow || !isExpanded) return;
-  const clamped = Math.max(200, Math.min(900, height));
-  settings.expandedHeight = clamped;
+  const pos = settings.position || "top";
+  if (pos === "left" || pos === "right") {
+    // For side positions, drag handle adjusts width
+    const clamped = Math.max(400, Math.min(1200, size));
+    settings.expandedWidth = clamped;
+  } else {
+    const clamped = Math.max(200, Math.min(900, size));
+    settings.expandedHeight = clamped;
+  }
   const bounds = getExpandedBounds();
   mainWindow.setBounds(bounds, false);
   saveSettings(settings);
+});
+
+// ── SSH IPC handlers ───────────────────────────────────────────────
+
+ipcMain.handle("ssh-connect", async (_event, { tabId, profileId, password }) => {
+  return createSshSession(tabId, profileId, password);
+});
+
+ipcMain.on("ssh-credential-response", (_event, { tabId, credential }) => {
+  const pending = pendingCredentials.get(tabId);
+  if (pending) {
+    pending.resolve(credential);
+    pendingCredentials.delete(tabId);
+  }
+});
+
+ipcMain.on("ssh-host-verify-response", (_event, { tabId, accepted }) => {
+  const pending = pendingHostVerify.get(tabId);
+  if (pending) {
+    pending.resolve(accepted);
+    pendingHostVerify.delete(tabId);
+  }
+});
+
+ipcMain.handle("ssh-save-profile", (_event, profile) => {
+  if (!profile || typeof profile.host !== "string" || !profile.host.trim()) {
+    throw new Error("Invalid SSH profile: host is required");
+  }
+  if (typeof profile.username !== "string" || !profile.username.trim()) {
+    throw new Error("Invalid SSH profile: username is required");
+  }
+  profile.port = parseInt(profile.port) || 22;
+  if (profile.port < 1 || profile.port > 65535) profile.port = 22;
+  if (!profile.id) profile.id = crypto.randomUUID();
+  const idx = (settings.sshProfiles || []).findIndex((p) => p.id === profile.id);
+  if (idx >= 0) {
+    settings.sshProfiles[idx] = profile;
+  } else {
+    if (!settings.sshProfiles) settings.sshProfiles = [];
+    settings.sshProfiles.push(profile);
+  }
+  saveSettings(settings);
+  return profile;
+});
+
+ipcMain.handle("ssh-delete-profile", (_event, profileId) => {
+  settings.sshProfiles = (settings.sshProfiles || []).filter((p) => p.id !== profileId);
+  saveSettings(settings);
+  return true;
+});
+
+ipcMain.handle("ssh-list-profiles", () => {
+  return settings.sshProfiles || [];
+});
+
+ipcMain.handle("ssh-browse-key", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select SSH Private Key",
+    defaultPath: path.join(os.homedir(), ".ssh"),
+    properties: ["openFile", "showHiddenFiles"],
+  });
+  return result.canceled ? null : result.filePaths[0];
 });
 
 // ── Electron CLI flags for Wayland support ─────────────────────────
@@ -1373,8 +1746,20 @@ app.whenReady().then(() => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  clearInterval(idleCheckInterval);
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
+  for (const [, s] of sshSessions) {
+    if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+    if (s.stream) s.stream.close();
+    if (s.client) s.client.end();
+  }
+  sshSessions.clear();
+  // Reject all pending credential/host-verify promises
+  for (const [, p] of pendingCredentials) p.reject(new Error("App quitting"));
+  pendingCredentials.clear();
+  for (const [, p] of pendingHostVerify) p.resolve(false);
+  pendingHostVerify.clear();
 });
 
 app.on("window-all-closed", () => {

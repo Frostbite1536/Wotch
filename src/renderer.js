@@ -178,10 +178,10 @@ function renderProjectDropdown() {
       btn.innerHTML = `
         <span style="font-size:13px;">📂</span>
         <div style="min-width:0;flex:1;">
-          <div class="proj-opt-name">${proj.name}</div>
-          <div class="proj-opt-path">${proj.path}</div>
+          <div class="proj-opt-name">${escapeHtml(proj.name)}</div>
+          <div class="proj-opt-path">${escapeHtml(proj.path)}</div>
         </div>
-        <span class="proj-opt-source">${label}</span>
+        <span class="proj-opt-source">${escapeHtml(label)}</span>
       `;
       btn.addEventListener("click", () => selectProject(proj));
       projectDropdown.appendChild(btn);
@@ -201,11 +201,12 @@ async function selectProject(project) {
   projNameText.textContent = project.name;
   closeDropdown();
 
-  // cd the active terminal into the project directory
+  // cd the active terminal into the project directory (local tabs only)
   if (activeTabId) {
-    window.wotch.writePty(activeTabId, `cd "${project.path}"\r`);
     const activeTab = tabs.find((t) => t.id === activeTabId);
-    if (activeTab) {
+    if (activeTab && activeTab.connectionType !== "ssh") {
+      const escapedPath = project.path.replace(/'/g, "'\\''");
+      window.wotch.writePty(activeTabId, `cd '${escapedPath}'\r`);
       activeTab.cwd = project.path;
       activeTab.name = project.name;
       renderTabBar();
@@ -286,7 +287,8 @@ async function doCheckpoint() {
   btnCheckpoint.textContent = "⏳ Saving...";
 
   try {
-    const result = await window.wotch.gitCheckpoint(currentProject.path);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const result = await window.wotch.gitCheckpoint(currentProject.path, `wotch-checkpoint-${timestamp}`);
     if (result.success) {
       showToast(`✓ ${result.message} (${result.details.changedFiles} files)`, "success");
     } else {
@@ -306,11 +308,13 @@ async function doCheckpoint() {
 btnCheckpoint.addEventListener("click", doCheckpoint);
 
 // ── Tab management ─────────────────────────────────────
-async function createTab(cwdOverride) {
+async function createTab(cwdOverride, sshProfile) {
   tabCounter++;
   const tabId = `tab-${tabCounter}`;
   const cwd = cwdOverride || (currentProject ? currentProject.path : await window.wotch.getCwd());
-  const name = currentProject ? currentProject.name : `Session ${tabCounter}`;
+  const name = sshProfile
+    ? `SSH: ${sshProfile.name}`
+    : (currentProject ? currentProject.name : `Session ${tabCounter}`);
 
   // Terminal instance
   const term = new Terminal({
@@ -335,26 +339,57 @@ async function createTab(cwdOverride) {
 
   term.open(containerEl);
 
-  // Create PTY
-  await window.wotch.createPty(tabId, cwd);
-
-  // Wire PTY ↔ xterm
+  // Wire PTY/SSH ↔ xterm (same IPC for both — main process routes transparently)
   term.onData((data) => window.wotch.writePty(tabId, data));
   term.onResize(({ cols, rows }) => window.wotch.resizePty(tabId, cols, rows));
 
-  const tab = { id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd };
+  const tab = {
+    id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd,
+    connectionType: sshProfile ? "ssh" : "local",
+    profileId: sshProfile ? sshProfile.id : null,
+  };
   tabs.push(tab);
 
   renderTabBar();
   activateTab(tabId);
 
-  // Auto-launch Claude if enabled
-  try {
-    const s = await window.wotch.getSettings();
-    if (s.autoLaunchClaude) {
-      setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+  if (sshProfile) {
+    // Ensure panel is expanded so credential/host-key dialogs are visible
+    if (!isExpanded) {
+      pillEl.click();
+      await new Promise((r) => setTimeout(r, 350));
     }
-  } catch { /* ignore */ }
+
+    term.writeln(`\x1b[36mConnecting to ${sshProfile.host}:${sshProfile.port}...\x1b[0m`);
+
+    let password = null;
+    if (sshProfile.authMethod === "password") {
+      password = await promptSshCredential(tabId, "password",
+        `Password for ${sshProfile.username}@${sshProfile.host}:`);
+      if (password === null) {
+        term.writeln("\x1b[31mConnection cancelled.\x1b[0m");
+        return tab;
+      }
+    }
+
+    try {
+      await window.wotch.sshConnect(tabId, sshProfile.id, password);
+      term.writeln("\x1b[32mConnected.\x1b[0m\r\n");
+    } catch (err) {
+      term.writeln(`\x1b[31mSSH connection failed: ${err.message}\x1b[0m`);
+    }
+  } else {
+    // Local PTY
+    await window.wotch.createPty(tabId, cwd);
+
+    // Auto-launch Claude if enabled
+    try {
+      const s = await window.wotch.getSettings();
+      if (s.autoLaunchClaude) {
+        setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+      }
+    } catch { /* ignore */ }
+  }
 
   return tab;
 }
@@ -381,6 +416,24 @@ function activateTab(tabId) {
 function closeTab(tabId) {
   const idx = tabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return;
+
+  // Dismiss any SSH dialogs for this tab
+  const credResolve = credentialResolves.get(tabId);
+  if (credResolve) { credResolve(null); credentialResolves.delete(tabId); sshCredentialOverlay.classList.remove("open"); }
+  // Dismiss active host-key dialog if it belongs to this tab
+  if (hostVerifyActiveTabId === tabId) {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, false);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
+  }
+  // Remove any queued host-verify requests for this tab
+  for (let i = hostVerifyQueue.length - 1; i >= 0; i--) {
+    if (hostVerifyQueue[i].tabId === tabId) {
+      hostVerifyQueue.splice(i, 1);
+      window.wotch.sshHostVerifyResponse(tabId, false);
+    }
+  }
 
   window.wotch.killPty(tabId);
   tabs[idx].term.dispose();
@@ -411,7 +464,8 @@ function renderTabBar() {
     btn.draggable = true;
     btn.dataset.tabId = tab.id;
     const tabState = tabStatuses[tab.id]?.state || "idle";
-    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${tab.name}<span class="tab-close" data-close="${tab.id}">✕</span>`;
+    const isSSH = tab.connectionType === "ssh";
+    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${isSSH ? '<span class="ssh-badge">SSH</span>' : ""}${escapeHtml(tab.name)}<span class="tab-close" data-close="${tab.id}">✕</span>`;
     btn.addEventListener("click", (e) => {
       if (e.target.dataset.close) {
         closeTab(e.target.dataset.close);
@@ -470,6 +524,8 @@ window.wotch.onPtyExit(({ tabId, exitCode }) => {
   const tab = tabs.find((t) => t.id === tabId);
   if (tab) {
     tab.term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
+    tabStatuses[tabId] = { state: exitCode === 0 ? "idle" : "error", description: "Exited" };
+    renderTabBar();
   }
 });
 
@@ -560,7 +616,79 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(terminalsEl);
 
 // ── Event listeners ────────────────────────────────────
-btnAddTab.addEventListener("click", () => createTab());
+// ── New tab menu ──────────────────────────────────────
+const newTabMenu = document.getElementById("new-tab-menu");
+let newTabMenuOpen = false;
+
+function closeNewTabMenu() {
+  newTabMenu.classList.remove("open");
+  newTabMenuOpen = false;
+}
+
+async function showNewTabMenu(e) {
+  if (newTabMenuOpen) { closeNewTabMenu(); return; }
+
+  const profiles = await window.wotch.sshListProfiles();
+  newTabMenu.innerHTML = "";
+
+  // Local terminal option
+  const localOpt = document.createElement("div");
+  localOpt.className = "new-tab-option";
+  localOpt.textContent = "Local Terminal";
+  localOpt.addEventListener("click", () => { closeNewTabMenu(); createTab(); });
+  newTabMenu.appendChild(localOpt);
+
+  if (profiles.length > 0) {
+    const sep = document.createElement("div");
+    sep.className = "new-tab-separator";
+    newTabMenu.appendChild(sep);
+
+    for (const p of profiles) {
+      const opt = document.createElement("div");
+      opt.className = "new-tab-option";
+      opt.innerHTML = `<span class="ntm-badge">SSH</span>${escapeHtml(p.name)}`;
+      opt.addEventListener("click", () => { closeNewTabMenu(); createTab(null, p); });
+      newTabMenu.appendChild(opt);
+    }
+  }
+
+  // "Connect via SSH..." option
+  const sep2 = document.createElement("div");
+  sep2.className = "new-tab-separator";
+  newTabMenu.appendChild(sep2);
+  const sshOpt = document.createElement("div");
+  sshOpt.className = "new-tab-option";
+  sshOpt.style.color = "var(--accent)";
+  sshOpt.textContent = "Connect via SSH...";
+  sshOpt.addEventListener("click", () => { closeNewTabMenu(); showSshConnectDialog(); });
+  newTabMenu.appendChild(sshOpt);
+
+  // Position the menu near the + button
+  const rect = btnAddTab.getBoundingClientRect();
+  newTabMenu.style.top = `${rect.bottom + 4}px`;
+  newTabMenu.style.left = `${rect.left}px`;
+  newTabMenu.classList.add("open");
+  newTabMenuOpen = true;
+}
+
+let connectAfterSave = false;
+
+function showSshConnectDialog() {
+  connectAfterSave = true;
+  openSshEditor(null);
+}
+
+// Close menu when clicking outside
+document.addEventListener("click", (e) => {
+  if (newTabMenuOpen && !newTabMenu.contains(e.target) && e.target !== btnAddTab) {
+    closeNewTabMenu();
+  }
+});
+
+btnAddTab.addEventListener("click", (e) => {
+  e.stopPropagation();
+  showNewTabMenu(e);
+});
 
 // Keyboard shortcuts within the renderer
 document.addEventListener("keydown", (e) => {
@@ -591,7 +719,11 @@ document.addEventListener("keydown", (e) => {
     searchOpen ? closeSearch() : openSearch();
   }
   if (e.key === "Escape") {
-    if (paletteOpen) closePalette();
+    if (sshCredentialOverlay.classList.contains("open")) document.getElementById("btn-ssh-cred-cancel").click();
+    else if (sshHostkeyOverlay.classList.contains("open")) document.getElementById("btn-ssh-hostkey-reject").click();
+    else if (sshEditorOverlay.classList.contains("open")) { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); }
+    else if (newTabMenuOpen) closeNewTabMenu();
+    else if (paletteOpen) closePalette();
     else if (searchOpen) closeSearch();
     else if (diffOverlay.classList.contains("open")) closeDiff();
     else if (settingsOpen) closeSettings();
@@ -629,6 +761,22 @@ window.wotch.onPinState((pinned) => {
   updatePinButton();
 });
 
+// ── Position handling ──────────────────────────────────
+const pillArrow = document.querySelector("#pill .arrow");
+const ARROW_CHARS = { top: "\u25BE", left: "\u25B8", right: "\u25C2" }; // ▾ ▸ ◂
+
+function applyPosition(position) {
+  const pos = position || "top";
+  document.body.classList.remove("position-top", "position-left", "position-right");
+  document.body.classList.add(`position-${pos}`);
+  // Update arrow to point toward screen interior
+  if (pillArrow) pillArrow.textContent = ARROW_CHARS[pos] || ARROW_CHARS.top;
+}
+
+window.wotch.onPositionChanged((position) => {
+  applyPosition(position);
+});
+
 // ── Settings UI ────────────────────────────────────────
 const settingsOverlay = document.getElementById("settings-overlay");
 const btnSettings = document.getElementById("btn-settings");
@@ -647,6 +795,7 @@ const setDefaultShell = document.getElementById("set-default-shell");
 const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
 const setDisplay = document.getElementById("set-display");
+const setPosition = document.getElementById("set-position");
 
 function openSettings() {
   settingsOpen = true;
@@ -675,16 +824,18 @@ async function loadSettingsUI() {
     setDefaultShell.value = s.defaultShell || "";
     if (setTheme) setTheme.value = s.theme || "dark";
     if (setAutoLaunchClaude) setAutoLaunchClaude.classList.toggle("on", s.autoLaunchClaude || false);
+    if (setPosition) setPosition.value = s.position || "top";
     // Populate display selector
     if (setDisplay) {
       try {
         const displays = await window.wotch.getDisplays();
         setDisplay.innerHTML = displays.map((d) =>
-          `<option value="${d.index}">${d.label} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
+          `<option value="${d.index}">${escapeHtml(d.label)} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
         ).join("");
         setDisplay.value = s.displayIndex || 0;
       } catch { /* ignore */ }
     }
+    renderSshProfiles();
   } catch { /* ignore */ }
 }
 
@@ -705,6 +856,7 @@ function debouncedSave() {
       theme: setTheme ? setTheme.value : "dark",
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
+      position: setPosition ? setPosition.value : "top",
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -739,6 +891,9 @@ if (setAutoLaunchClaude) {
 if (setDisplay) {
   setDisplay.addEventListener("change", debouncedSave);
 }
+if (setPosition) {
+  setPosition.addEventListener("change", debouncedSave);
+}
 
 btnSettings.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -759,6 +914,197 @@ btnSettingsReset.addEventListener("click", async () => {
   } catch (err) {
     showToast("Failed to reset settings", "error");
   }
+});
+
+// ── SSH Settings Management ──────────────────────────
+const sshProfilesList = document.getElementById("ssh-profiles-list");
+const btnSshAdd = document.getElementById("btn-ssh-add");
+const sshEditorOverlay = document.getElementById("ssh-editor-overlay");
+const sshCredentialOverlay = document.getElementById("ssh-credential-overlay");
+const sshHostkeyOverlay = document.getElementById("ssh-hostkey-overlay");
+
+let editingProfileId = null;
+
+function escapeHtmlAttr(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function renderSshProfiles() {
+  const profiles = await window.wotch.sshListProfiles();
+  sshProfilesList.innerHTML = "";
+  if (profiles.length === 0) {
+    sshProfilesList.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:6px 0;">No saved connections</div>';
+    return;
+  }
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    row.innerHTML = `
+      <div style="min-width:0;flex:1;">
+        <div class="setting-label">${escapeHtml(p.name)}</div>
+        <div class="setting-hint">${escapeHtml(p.username)}@${escapeHtml(p.host)}:${p.port} (${p.authMethod})</div>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button class="settings-reset-btn ssh-edit-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;">Edit</button>
+        <button class="settings-reset-btn ssh-del-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;color:#f87171;">Delete</button>
+      </div>
+    `;
+    sshProfilesList.appendChild(row);
+  }
+  sshProfilesList.querySelectorAll(".ssh-edit-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openSshEditor(btn.dataset.id));
+  });
+  sshProfilesList.querySelectorAll(".ssh-del-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await window.wotch.sshDeleteProfile(btn.dataset.id);
+      renderSshProfiles();
+      showToast("SSH connection deleted", "info");
+    });
+  });
+}
+
+async function openSshEditor(profileId) {
+  editingProfileId = profileId || null;
+  document.getElementById("ssh-editor-title").textContent = profileId ? "Edit SSH Connection" : "New SSH Connection";
+  document.getElementById("ssh-name").value = "";
+  document.getElementById("ssh-host").value = "";
+  document.getElementById("ssh-port").value = "22";
+  document.getElementById("ssh-username").value = "";
+  document.getElementById("ssh-auth-method").value = "key";
+  document.getElementById("ssh-key-path").value = "";
+  document.getElementById("ssh-key-row").style.display = "";
+
+  if (profileId) {
+    const profiles = await window.wotch.sshListProfiles();
+    const p = profiles.find((x) => x.id === profileId);
+    if (p) {
+      document.getElementById("ssh-name").value = p.name;
+      document.getElementById("ssh-host").value = p.host;
+      document.getElementById("ssh-port").value = p.port;
+      document.getElementById("ssh-username").value = p.username;
+      document.getElementById("ssh-auth-method").value = p.authMethod;
+      document.getElementById("ssh-key-path").value = p.keyPath || "";
+      document.getElementById("ssh-key-row").style.display = p.authMethod === "key" ? "" : "none";
+    }
+  }
+  sshEditorOverlay.classList.add("open");
+}
+
+document.getElementById("ssh-auth-method").addEventListener("change", (e) => {
+  document.getElementById("ssh-key-row").style.display = e.target.value === "key" ? "" : "none";
+});
+
+document.getElementById("btn-ssh-browse-key").addEventListener("click", async () => {
+  const filePath = await window.wotch.sshBrowseKey();
+  if (filePath) document.getElementById("ssh-key-path").value = filePath;
+});
+
+document.getElementById("btn-ssh-save").addEventListener("click", async () => {
+  const profile = {
+    id: editingProfileId || undefined,
+    name: document.getElementById("ssh-name").value.trim() || "Unnamed",
+    host: document.getElementById("ssh-host").value.trim(),
+    port: parseInt(document.getElementById("ssh-port").value) || 22,
+    username: document.getElementById("ssh-username").value.trim(),
+    authMethod: document.getElementById("ssh-auth-method").value,
+    keyPath: document.getElementById("ssh-key-path").value.trim(),
+  };
+  if (!profile.host || !profile.username) {
+    showToast("Host and username are required", "error");
+    return;
+  }
+  const saved = await window.wotch.sshSaveProfile(profile);
+  sshEditorOverlay.classList.remove("open");
+  renderSshProfiles();
+  if (connectAfterSave) {
+    connectAfterSave = false;
+    createTab(null, saved);
+  } else {
+    showToast(`SSH connection "${profile.name}" saved`, "success");
+  }
+});
+
+document.getElementById("btn-ssh-editor-close").addEventListener("click", () => { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); });
+document.getElementById("btn-ssh-cancel").addEventListener("click", () => { connectAfterSave = false; sshEditorOverlay.classList.remove("open"); });
+btnSshAdd.addEventListener("click", () => openSshEditor(null));
+
+// ── SSH Credential Prompt ────────────────────────────
+const credentialResolves = new Map(); // tabId → resolve
+
+function promptSshCredential(tabId, type, promptText) {
+  return new Promise((resolve) => {
+    credentialResolves.set(tabId, resolve);
+    document.getElementById("ssh-credential-title").textContent =
+      type === "passphrase" ? "Key Passphrase" : "SSH Password";
+    document.getElementById("ssh-credential-prompt").textContent = promptText;
+    document.getElementById("ssh-credential-input").value = "";
+    document.getElementById("ssh-credential-input").dataset.tabId = tabId;
+    sshCredentialOverlay.classList.add("open");
+    setTimeout(() => document.getElementById("ssh-credential-input").focus(), 100);
+  });
+}
+
+document.getElementById("btn-ssh-cred-ok").addEventListener("click", () => {
+  const input = document.getElementById("ssh-credential-input");
+  const val = input.value;
+  const tabId = input.dataset.tabId;
+  input.value = ""; // Clear password from DOM immediately
+  sshCredentialOverlay.classList.remove("open");
+  const resolve = credentialResolves.get(tabId);
+  if (resolve) { resolve(val); credentialResolves.delete(tabId); }
+});
+
+document.getElementById("btn-ssh-cred-cancel").addEventListener("click", () => {
+  const input = document.getElementById("ssh-credential-input");
+  const tabId = input.dataset.tabId;
+  input.value = ""; // Clear password from DOM immediately
+  sshCredentialOverlay.classList.remove("open");
+  const resolve = credentialResolves.get(tabId);
+  if (resolve) { resolve(null); credentialResolves.delete(tabId); }
+});
+
+document.getElementById("ssh-credential-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById("btn-ssh-cred-ok").click(); }
+});
+
+window.wotch.onSshCredentialRequest(async ({ tabId, type, prompt }) => {
+  const credential = await promptSshCredential(tabId, type, prompt);
+  window.wotch.sshCredentialResponse(tabId, credential);
+});
+
+// ── SSH Host Key Verification (queued) ──────────────
+const hostVerifyQueue = []; // { tabId, host, port, fingerprint, isChanged }
+let hostVerifyActiveTabId = null; // tabId of the currently shown dialog, or null
+
+function processHostVerifyQueue() {
+  if (hostVerifyActiveTabId !== null || hostVerifyQueue.length === 0) return;
+  const { tabId, host, port, fingerprint, isChanged } = hostVerifyQueue.shift();
+  hostVerifyActiveTabId = tabId;
+
+  const msg = isChanged
+    ? `WARNING: Host key for ${host}:${port} has CHANGED! This could indicate a man-in-the-middle attack. Do you still want to connect?`
+    : `The authenticity of host '${host}:${port}' can't be established. Do you want to continue connecting?`;
+  document.getElementById("ssh-hostkey-message").textContent = msg;
+  document.getElementById("ssh-hostkey-fingerprint").textContent = fingerprint;
+  sshHostkeyOverlay.classList.add("open");
+
+  document.getElementById("btn-ssh-hostkey-accept").onclick = () => {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, true);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
+  };
+  document.getElementById("btn-ssh-hostkey-reject").onclick = () => {
+    sshHostkeyOverlay.classList.remove("open");
+    window.wotch.sshHostVerifyResponse(tabId, false);
+    hostVerifyActiveTabId = null;
+    processHostVerifyQueue();
+  };
+}
+
+window.wotch.onSshHostVerify(({ tabId, host, port, fingerprint, isChanged }) => {
+  hostVerifyQueue.push({ tabId, host, port, fingerprint, isChanged });
+  processHostVerifyQueue();
 });
 
 // ── Terminal search (Ctrl+F) ──────────────────────────
@@ -839,27 +1185,49 @@ document.getElementById("btn-diff")?.addEventListener("click", () => showDiff("l
 const resizeHandle = document.getElementById("resize-handle");
 let resizing = false;
 let resizeStartY = 0;
+let resizeStartX = 0;
 let resizeStartHeight = 0;
+let resizeStartWidth = 0;
 
 resizeHandle.addEventListener("mousedown", (e) => {
   resizing = true;
   resizeStartY = e.screenY;
+  resizeStartX = e.screenX;
   resizeStartHeight = document.body.offsetHeight;
+  resizeStartWidth = document.body.offsetWidth;
   e.preventDefault();
 });
 
+let resizeRafPending = false;
 document.addEventListener("mousemove", (e) => {
   if (!resizing) return;
-  const delta = e.screenY - resizeStartY;
-  const newHeight = resizeStartHeight + delta;
-  window.wotch.resizeWindow(newHeight);
+  if (resizeRafPending) return;
+  const sx = e.screenX, sy = e.screenY;
+  resizeRafPending = true;
+  requestAnimationFrame(() => {
+    resizeRafPending = false;
+    const pos = document.body.classList.contains("position-left") ? "left"
+      : document.body.classList.contains("position-right") ? "right" : "top";
+    if (pos === "left") {
+      window.wotch.resizeWindow(resizeStartWidth + (sx - resizeStartX));
+    } else if (pos === "right") {
+      window.wotch.resizeWindow(resizeStartWidth + (resizeStartX - sx));
+    } else {
+      window.wotch.resizeWindow(resizeStartHeight + (sy - resizeStartY));
+    }
+  });
 });
 
 document.addEventListener("mouseup", () => {
   if (resizing) {
     resizing = false;
-    const h = document.body.offsetHeight;
-    window.wotch.saveSettings({ expandedHeight: h });
+    const pos = document.body.classList.contains("position-left") ? "left"
+      : document.body.classList.contains("position-right") ? "right" : "top";
+    if (pos === "left" || pos === "right") {
+      window.wotch.saveSettings({ expandedWidth: document.body.offsetWidth });
+    } else {
+      window.wotch.saveSettings({ expandedHeight: document.body.offsetHeight });
+    }
     tabs.forEach((t) => t.fitAddon.fit());
   }
 });
@@ -880,6 +1248,8 @@ const COMMANDS = [
   { name: "View Diff", shortcut: "", action: () => showDiff("last-checkpoint") },
   { name: "Open Settings", shortcut: "", action: () => openSettings() },
   { name: "Scan Projects", shortcut: "", action: () => loadProjects() },
+  { name: "SSH: Connect to Remote", shortcut: "", action: () => showSshConnectDialog() },
+  { name: "SSH: Manage Connections", shortcut: "", action: () => openSettings() },
 ];
 
 function openPalette() {
@@ -944,6 +1314,7 @@ paletteList.addEventListener("click", (e) => {
   try {
     const initSettings = await window.wotch.getSettings();
     if (initSettings.theme) applyTheme(initSettings.theme);
+    applyPosition(initSettings.position);
   } catch { /* ignore */ }
 
   // Check platform and adapt UI accordingly
@@ -997,11 +1368,6 @@ paletteList.addEventListener("click", (e) => {
       detectedProjects.find((p) => p.source === "vscode-recent");
     if (autoProject) {
       await selectProject(autoProject);
-      // cd the first tab into the project
-      window.wotch.writePty(tabs[0].id, `cd "${autoProject.path}"\r`);
-      tabs[0].name = autoProject.name;
-      tabs[0].cwd = autoProject.path;
-      renderTabBar();
     }
   } catch { /* no projects found, that's fine */ }
 })();
