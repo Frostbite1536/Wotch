@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Wotch",
+    "slug": "wotch-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "wotch",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#0a0a12"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wotch.mobile",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0a12"
+      },
+      "package": "com.wotch.mobile"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font",
+      "expo-document-picker"
+    ]
+  }
+}
