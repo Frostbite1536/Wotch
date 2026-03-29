@@ -377,6 +377,8 @@ async function createTab(cwdOverride, sshProfile) {
       term.writeln("\x1b[32mConnected.\x1b[0m\r\n");
     } catch (err) {
       term.writeln(`\x1b[31mSSH connection failed: ${err.message}\x1b[0m`);
+    } finally {
+      password = null;
     }
   } else {
     // Local PTY
@@ -463,9 +465,10 @@ function renderTabBar() {
     btn.className = "tab" + (tab.id === activeTabId ? " active" : "");
     btn.draggable = true;
     btn.dataset.tabId = tab.id;
-    const tabState = tabStatuses[tab.id]?.state || "idle";
+    const VALID_STATES = new Set(["idle", "thinking", "working", "waiting", "done", "error"]);
+    const tabState = VALID_STATES.has(tabStatuses[tab.id]?.state) ? tabStatuses[tab.id].state : "idle";
     const isSSH = tab.connectionType === "ssh";
-    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${isSSH ? '<span class="ssh-badge">SSH</span>' : ""}${escapeHtml(tab.name)}<span class="tab-close" data-close="${tab.id}">✕</span>`;
+    btn.innerHTML = `<span class="tab-dot status-${tabState}"></span>${isSSH ? '<span class="ssh-badge">SSH</span>' : ""}${escapeHtml(tab.name)}<span class="tab-close" data-close="${escapeHtmlAttr(tab.id)}">✕</span>`;
     btn.addEventListener("click", (e) => {
       if (e.target.dataset.close) {
         closeTab(e.target.dataset.close);
@@ -516,11 +519,13 @@ function renderTabBar() {
 
 // ── PTY data from main process ─────────────────────────
 window.wotch.onPtyData(({ tabId, data }) => {
+  if (typeof tabId !== "string" || typeof data !== "string") return;
   const tab = tabs.find((t) => t.id === tabId);
   if (tab) tab.term.write(data);
 });
 
 window.wotch.onPtyExit(({ tabId, exitCode }) => {
+  if (typeof tabId !== "string" || typeof exitCode !== "number") return;
   const tab = tabs.find((t) => t.id === tabId);
   if (tab) {
     tab.term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
@@ -571,8 +576,12 @@ const STATUS_DISPLAY = {
   error:    { color: "#f87171",      label: "Error",          badge: "Error" },
 };
 
+const VALID_STATUS_STATES = new Set(["idle", "thinking", "working", "waiting", "done", "error"]);
+
 function updateClaudeStatus(aggregate) {
-  const { state, description } = aggregate;
+  const rawState = aggregate.state;
+  const state = VALID_STATUS_STATES.has(rawState) ? rawState : "idle";
+  const description = aggregate.description;
   const display = STATUS_DISPLAY[state] || STATUS_DISPLAY.idle;
 
   // ── Update pill dot ──
@@ -598,8 +607,9 @@ function updateClaudeStatus(aggregate) {
 }
 
 window.wotch.onClaudeStatus(({ aggregate, perTab }) => {
+  if (!aggregate || typeof aggregate !== "object") return;
   updateClaudeStatus(aggregate);
-  tabStatuses = perTab || {};
+  tabStatuses = (perTab && typeof perTab === "object") ? perTab : {};
   renderTabBar();
 });
 
@@ -830,7 +840,7 @@ async function loadSettingsUI() {
       try {
         const displays = await window.wotch.getDisplays();
         setDisplay.innerHTML = displays.map((d) =>
-          `<option value="${d.index}">${escapeHtml(d.label)} (${d.width}x${d.height})${d.primary ? " — primary" : ""}</option>`
+          `<option value="${parseInt(d.index) || 0}">${escapeHtml(d.label)} (${parseInt(d.width) || 0}x${parseInt(d.height) || 0})${d.primary ? " — primary" : ""}</option>`
         ).join("");
         setDisplay.value = s.displayIndex || 0;
       } catch { /* ignore */ }
@@ -926,7 +936,7 @@ const sshHostkeyOverlay = document.getElementById("ssh-hostkey-overlay");
 let editingProfileId = null;
 
 function escapeHtmlAttr(str) {
-  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 async function renderSshProfiles() {

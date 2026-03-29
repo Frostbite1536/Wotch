@@ -2,11 +2,39 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Wotch</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+    @font-face {
+      font-family: 'JetBrains Mono';
+      font-weight: 300;
+      font-style: normal;
+      font-display: swap;
+      src: url('./fonts/JetBrainsMono-Light.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'JetBrains Mono';
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+      src: url('./fonts/JetBrainsMono-Regular.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'JetBrains Mono';
+      font-weight: 500;
+      font-style: normal;
+      font-display: swap;
+      src: url('./fonts/JetBrainsMono-Medium.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'JetBrains Mono';
+      font-weight: 600;
+      font-style: normal;
+      font-display: swap;
+      src: url('./fonts/JetBrainsMono-SemiBold.woff2') format('woff2');
+    }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1354,7 +1382,7 @@
       </div>
       <div style="padding:14px;">
         <div id="ssh-credential-prompt" style="color:var(--text-dim);font-size:12px;margin-bottom:10px;"></div>
-        <input type="password" class="setting-input setting-input-wide" id="ssh-credential-input" placeholder="Enter credential">
+        <input type="password" class="setting-input setting-input-wide" id="ssh-credential-input" placeholder="Enter credential" autocomplete="off">
       </div>
       <div class="settings-footer" style="justify-content:flex-end;gap:8px;">
         <button class="settings-reset-btn" id="btn-ssh-cred-cancel">Cancel</button>

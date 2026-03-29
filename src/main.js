@@ -250,6 +250,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   };
 
@@ -511,7 +512,7 @@ function requestHostVerify(tabId, host, port, fingerprint, isChanged) {
   });
 }
 
-async function createSshSession(tabId, profileId, password) {
+async function createSshSession(tabId, profileId, password, reconnectAttempts = 0) {
   const profile = (settings.sshProfiles || []).find((p) => p.id === profileId);
   if (!profile) throw new Error("SSH profile not found");
 
@@ -528,8 +529,19 @@ async function createSshSession(tabId, profileId, password) {
 
   // Auth setup
   if (profile.authMethod === "key") {
+    // Validate keyPath: reject traversal, verify it's a regular file of reasonable size
+    if (!profile.keyPath || typeof profile.keyPath !== "string") {
+      throw new Error("Key path is required");
+    }
+    if (profile.keyPath.includes("..")) {
+      throw new Error("Invalid key path: directory traversal not allowed");
+    }
+    const resolvedKey = path.resolve(profile.keyPath);
     try {
-      connectOpts.privateKey = fs.readFileSync(profile.keyPath, "utf-8");
+      const stat = fs.statSync(resolvedKey);
+      if (!stat.isFile()) throw new Error("Key path is not a regular file");
+      if (stat.size > 32768) throw new Error("File too large to be an SSH key (max 32KB)");
+      connectOpts.privateKey = fs.readFileSync(resolvedKey, "utf-8");
     } catch (err) {
       throw new Error(`Failed to read key file: ${err.message}`);
     }
@@ -545,10 +557,16 @@ async function createSshSession(tabId, profileId, password) {
     // An async function returns a Promise (truthy), which ssh2 treats as verify(true),
     // auto-accepting all host keys. Use verify() callback instead.
     connectOpts.hostVerifier = (key, verify) => {
-      const fingerprint = crypto.createHash("sha256").update(key).digest("base64");
+      const fingerprint = "SHA256:" + crypto.createHash("sha256").update(key).digest("base64");
       const knownHosts = loadKnownHosts();
 
-      if (knownHosts[hostKey] === fingerprint) {
+      // Check stored fingerprint — also accept old entries without prefix and migrate them
+      const storedFp = knownHosts[hostKey];
+      if (storedFp === fingerprint || storedFp === fingerprint.slice(7)) {
+        if (storedFp !== fingerprint) {
+          knownHosts[hostKey] = fingerprint;
+          saveKnownHosts(knownHosts);
+        }
         verify(true);
         return;
       }
@@ -582,20 +600,30 @@ async function createSshSession(tabId, profileId, password) {
 
           const session = sshSessions.get(tabId);
           if (session && session.authMethod === "key" && !session.userKilled) {
-            // Attempt reconnect for key-based auth (password was discarded)
-            sendToTab(tabId, "\x1b[33mSSH connection lost. Reconnecting in 3s...\x1b[0m\r\n");
-            session.reconnectTimer = setTimeout(async () => {
-              try {
-                sshSessions.delete(tabId);
-                claudeStatus.removeTab(tabId);
-                await createSshSession(tabId, profileId);
-              } catch (e) {
-                sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                  mainWindow.webContents.send("pty-exit", { tabId, exitCode: 1 });
-                }
+            const attempt = reconnectAttempts + 1;
+            if (attempt > 5) {
+              sendToTab(tabId, "\x1b[31mSSH reconnect failed after 5 attempts. Open a new SSH tab to retry.\x1b[0m\r\n");
+              sshSessions.delete(tabId);
+              claudeStatus.removeTab(tabId);
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send("pty-exit", { tabId, exitCode: 1 });
               }
-            }, 3000);
+            } else {
+              const delay = Math.min(3000 * Math.pow(2, attempt - 1), 30000);
+              sendToTab(tabId, `\x1b[33mSSH connection lost. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${attempt}/5)...\x1b[0m\r\n`);
+              session.reconnectTimer = setTimeout(async () => {
+                try {
+                  sshSessions.delete(tabId);
+                  claudeStatus.removeTab(tabId);
+                  await createSshSession(tabId, profileId, null, attempt);
+                } catch (e) {
+                  sendToTab(tabId, `\x1b[31mReconnect failed: ${e.message}\x1b[0m\r\n`);
+                  if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send("pty-exit", { tabId, exitCode: 1 });
+                  }
+                }
+              }, delay);
+            }
           } else if (session && session.authMethod === "password" && !session.userKilled) {
             // Password-auth: can't auto-reconnect (password was discarded)
             sendToTab(tabId, "\x1b[33mSSH connection lost. Open a new SSH tab to reconnect.\x1b[0m\r\n");
@@ -1323,26 +1351,31 @@ function detectProjects() {
   });
 }
 
+// ── Project path validation ───────────────────────────────────────
+const knownProjectPaths = new Set();
+
+function isKnownProjectPath(p) {
+  if (!p || typeof p !== "string") return false;
+  return knownProjectPaths.has(path.resolve(p));
+}
+
 // ── Git Checkpointing ──────────────────────────────────────────────
 function gitCheckpoint(projectPath, message) {
   const result = { success: false, message: "", details: {} };
 
   try {
-    // Verify it's a git repo
-    execSync("git rev-parse --is-inside-work-tree", { cwd: projectPath, encoding: "utf-8", timeout: 5000 });
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectPath, encoding: "utf-8", timeout: 5000 });
   } catch {
     result.message = "Not a git repository";
     return result;
   }
 
   try {
-    // Get current branch
-    const branch = execSync("git branch --show-current", {
+    const branch = execFileSync("git", ["branch", "--show-current"], {
       cwd: projectPath, encoding: "utf-8", timeout: 5000,
     }).trim();
 
-    // Check for uncommitted changes
-    const status = execSync("git status --porcelain", {
+    const status = execFileSync("git", ["status", "--porcelain"], {
       cwd: projectPath, encoding: "utf-8", timeout: 5000,
     }).trim();
 
@@ -1356,16 +1389,13 @@ function gitCheckpoint(projectPath, message) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const checkpointMsg = message || `wotch-checkpoint-${timestamp}`;
 
-    // Stage all changes
-    execSync("git add -A", { cwd: projectPath, timeout: 5000 });
+    execFileSync("git", ["add", "-A"], { cwd: projectPath, timeout: 5000 });
 
-    // Create checkpoint commit
     execFileSync("git", ["commit", "-m", checkpointMsg], {
       cwd: projectPath, encoding: "utf-8", timeout: 10000,
     });
 
-    // Get the short hash
-    const hash = execSync("git rev-parse --short HEAD", {
+    const hash = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
       cwd: projectPath, encoding: "utf-8", timeout: 5000,
     }).trim();
 
@@ -1381,17 +1411,17 @@ function gitCheckpoint(projectPath, message) {
 
 function gitGetStatus(projectPath) {
   try {
-    execSync("git rev-parse --is-inside-work-tree", { cwd: projectPath, encoding: "utf-8", timeout: 5000 });
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectPath, encoding: "utf-8", timeout: 5000 });
   } catch {
     return null;
   }
 
   try {
-    const branch = execSync("git branch --show-current", {
+    const branch = execFileSync("git", ["branch", "--show-current"], {
       cwd: projectPath, encoding: "utf-8", timeout: 5000,
     }).trim();
 
-    const status = execSync("git status --porcelain", {
+    const status = execFileSync("git", ["status", "--porcelain"], {
       cwd: projectPath, encoding: "utf-8", timeout: 5000,
     }).trim();
 
@@ -1399,16 +1429,15 @@ function gitGetStatus(projectPath) {
 
     let lastCommit = "";
     try {
-      lastCommit = execSync('git log -1 --format="%h %s"', {
+      lastCommit = execFileSync("git", ["log", "-1", "--format=%h %s"], {
         cwd: projectPath, encoding: "utf-8", timeout: 5000,
-        stdio: ["pipe", "pipe", "pipe"], // suppress stderr
+        stdio: ["pipe", "pipe", "pipe"],
       }).trim();
     } catch { /* no commits yet */ }
 
-    // Count wotch checkpoints
     let checkpointCount = 0;
     try {
-      const cpLog = execSync('git log --oneline --grep="wotch-checkpoint"', {
+      const cpLog = execFileSync("git", ["log", "--oneline", "--grep=wotch-checkpoint"], {
         cwd: projectPath, encoding: "utf-8", timeout: 5000,
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
@@ -1463,16 +1492,20 @@ ipcMain.handle("get-cwd", () => os.homedir());
 
 // Project detection
 ipcMain.handle("detect-projects", () => {
-  return detectProjects();
+  const projects = detectProjects();
+  for (const p of projects) knownProjectPaths.add(path.resolve(p.path));
+  return projects;
 });
 
 // Git checkpoint
 ipcMain.handle("git-checkpoint", (_event, { projectPath, message }) => {
+  if (!isKnownProjectPath(projectPath)) return { success: false, message: "Unknown project path" };
   return gitCheckpoint(projectPath, message);
 });
 
 // Git status
 ipcMain.handle("git-status", (_event, { projectPath }) => {
+  if (!isKnownProjectPath(projectPath)) return null;
   return gitGetStatus(projectPath);
 });
 
@@ -1488,12 +1521,35 @@ ipcMain.handle("get-platform-info", () => ({
 // Settings
 ipcMain.handle("get-settings", () => ({ ...settings }));
 
+const ALLOWED_SETTING_KEYS = [
+  "pillWidth", "pillHeight", "expandedWidth", "expandedHeight",
+  "hoverPadding", "collapseDelay", "mousePollingMs", "defaultShell",
+  "startExpanded", "pinned", "theme", "autoLaunchClaude",
+  "displayIndex", "position",
+];
+
 ipcMain.handle("save-settings", (_event, newSettings) => {
   const prev = { ...settings };
-  // Preserve sshProfiles — managed exclusively via ssh-save-profile/ssh-delete-profile
-  const preservedProfiles = settings.sshProfiles;
-  Object.assign(settings, newSettings);
-  settings.sshProfiles = preservedProfiles;
+  // Only accept known setting keys — blocks prototype pollution and arbitrary key injection
+  for (const key of ALLOWED_SETTING_KEYS) {
+    if (key in newSettings) settings[key] = newSettings[key];
+  }
+  // Validate defaultShell if changed — must be empty or listed in /etc/shells (Unix) or exist (Windows)
+  if (settings.defaultShell && settings.defaultShell !== prev.defaultShell) {
+    let shellValid = false;
+    try {
+      if (!IS_WIN) {
+        const shells = fs.readFileSync("/etc/shells", "utf-8")
+          .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+        shellValid = shells.includes(path.resolve(settings.defaultShell));
+      } else {
+        shellValid = fs.statSync(path.resolve(settings.defaultShell)).isFile();
+      }
+    } catch { /* stat or read failed */ }
+    if (!shellValid) {
+      settings.defaultShell = prev.defaultShell;
+    }
+  }
   const ok = saveSettings(settings);
 
   const positionChanged = prev.position !== settings.position;
@@ -1538,9 +1594,10 @@ ipcMain.handle("get-pinned", () => isPinned);
 
 // Git diff
 ipcMain.handle("git-diff", (_event, { projectPath, mode }) => {
+  if (!isKnownProjectPath(projectPath)) return { success: false, diff: "Unknown project path" };
   try {
-    const cmd = mode === "last-checkpoint" ? "git diff HEAD~1" : "git diff";
-    const output = execSync(cmd, {
+    const args = mode === "last-checkpoint" ? ["diff", "HEAD~1"] : ["diff"];
+    const output = execFileSync("git", args, {
       cwd: projectPath, encoding: "utf-8", timeout: 10000,
       maxBuffer: 1024 * 1024,
     });

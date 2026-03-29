@@ -8,19 +8,23 @@ contextBridge.exposeInMainWorld("wotch", {
   killPty: (tabId) => ipcRenderer.send("pty-kill", { tabId }),
 
   onPtyData: (callback) => {
+    ipcRenderer.removeAllListeners("pty-data");
     ipcRenderer.on("pty-data", (_e, payload) => callback(payload));
   },
   onPtyExit: (callback) => {
+    ipcRenderer.removeAllListeners("pty-exit");
     ipcRenderer.on("pty-exit", (_e, payload) => callback(payload));
   },
 
   // Expansion state
   onExpansionState: (callback) => {
+    ipcRenderer.removeAllListeners("expansion-state");
     ipcRenderer.on("expansion-state", (_e, expanded) => callback(expanded));
   },
 
   // Claude Code status
   onClaudeStatus: (callback) => {
+    ipcRenderer.removeAllListeners("claude-status");
     ipcRenderer.on("claude-status", (_e, status) => callback(status));
   },
 
@@ -48,14 +52,17 @@ contextBridge.exposeInMainWorld("wotch", {
   setPinned: (pinned) => ipcRenderer.invoke("set-pinned", pinned),
   getPinned: () => ipcRenderer.invoke("get-pinned"),
   onPinState: (callback) => {
+    ipcRenderer.removeAllListeners("pin-state");
     ipcRenderer.on("pin-state", (_e, pinned) => callback(pinned));
   },
 
   // Auto-update
   onUpdateAvailable: (callback) => {
+    ipcRenderer.removeAllListeners("update-available");
     ipcRenderer.on("update-available", (_e, version) => callback(version));
   },
   onUpdateDownloaded: (callback) => {
+    ipcRenderer.removeAllListeners("update-downloaded");
     ipcRenderer.on("update-downloaded", (_e, version) => callback(version));
   },
 
@@ -71,6 +78,7 @@ contextBridge.exposeInMainWorld("wotch", {
 
   // Position changes
   onPositionChanged: (callback) => {
+    ipcRenderer.removeAllListeners("position-changed");
     ipcRenderer.on("position-changed", (_e, position) => callback(position));
   },
 
@@ -87,9 +95,11 @@ contextBridge.exposeInMainWorld("wotch", {
   sshBrowseKey: () => ipcRenderer.invoke("ssh-browse-key"),
 
   onSshCredentialRequest: (callback) => {
+    ipcRenderer.removeAllListeners("ssh-credential-request");
     ipcRenderer.on("ssh-credential-request", (_e, payload) => callback(payload));
   },
   onSshHostVerify: (callback) => {
+    ipcRenderer.removeAllListeners("ssh-host-verify");
     ipcRenderer.on("ssh-host-verify", (_e, payload) => callback(payload));
   },
 });
