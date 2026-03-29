@@ -1,0 +1,13 @@
+{
+  "name": "wotch-bridge-server",
+  "version": "0.1.0",
+  "description": "WebSocket bridge server for Wotch Mobile — runs on your VPS",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "node-pty": "^1.0.0"
+  }
+}
