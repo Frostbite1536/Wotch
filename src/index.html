@@ -1649,9 +1649,25 @@
             </div>
             <button class="setting-toggle" id="set-mcp-enabled"></button>
           </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="bridge-dot"></span>
+                IDE Bridge (bidirectional)
+              </div>
+              <div class="setting-hint">WebSocket MCP server for Claude Code IDE integration</div>
+            </div>
+            <button class="setting-toggle" id="set-bridge-enabled"></button>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Bridge Port</div></div>
+            <input type="number" class="setting-input" id="set-bridge-port" min="1024" max="65535" value="19521">
+          </div>
+          <div id="bridge-status-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;"></div>
           <div style="display:flex;gap:8px;margin-top:8px;">
             <button class="settings-reset-btn" id="btn-reconfigure-hooks">Reconfigure Hooks</button>
             <button class="settings-reset-btn" id="btn-reregister-mcp">Re-register MCP</button>
+            <button class="settings-reset-btn" id="btn-restart-bridge">Restart Bridge</button>
           </div>
         </div>
         <div class="settings-section">

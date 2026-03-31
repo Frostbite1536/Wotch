@@ -80,7 +80,7 @@ These modules communicate via IPC channels through the existing preload bridge p
 
 ## Module Breakdown
 
-### AgentManager (`src/agent-manager.js`)
+### AgentManager (`src/main.js`)
 
 The top-level coordinator. Instantiated once in `src/main.js` after `app.whenReady()`.
 
@@ -109,9 +109,9 @@ class AgentManager {
 }
 ```
 
-### AgentLoader (`src/agent-loader.js`)
+### AgentLoader (integrated into AgentManager in `src/main.js`)
 
-Discovers and parses agent definition files.
+Discovers and parses agent definition files. Implemented as `_discoverAgents()`, `_scanDir()`, `parseAgentYaml()`, and `validateAgentDef()` functions.
 
 ```
 class AgentLoader {
@@ -131,7 +131,7 @@ class AgentLoader {
 }
 ```
 
-### AgentRuntime (`src/agent-runtime.js`)
+### AgentRuntime (`src/main.js`)
 
 Runs a single agent's conversation loop. One instance per active agent run.
 
@@ -165,7 +165,7 @@ class AgentRuntime {
 }
 ```
 
-### ToolRegistry (`src/agent-tools.js`)
+### ToolRegistry (implemented as `createAgentTools()` and `getToolSchemas()` in `src/main.js`)
 
 Manages the set of tools available to agents.
 
@@ -189,7 +189,7 @@ class ToolRegistry {
 }
 ```
 
-### TrustManager (`src/agent-trust.js`)
+### TrustManager (implemented as `loadAgentTrust()`, `saveAgentTrust()`, `TOOL_DANGER_LEVELS`, and `_needsApproval()` in `src/main.js`)
 
 Enforces the graduated trust model.
 

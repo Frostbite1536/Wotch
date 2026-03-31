@@ -264,6 +264,13 @@ Emergency stop (Ctrl+Shift+K) aborts all running agents within 500ms by setting 
 
 **Enforcement:** `emergencyStopAll()` method iterates all runtimes synchronously. The `cancelled` flag is checked at every loop iteration and tool boundary.
 
+### INV-SEC-019: IDE Bridge Security
+The IDE Bridge WebSocket server must bind to `127.0.0.1` only. Authentication uses a per-startup random token (`crypto.randomBytes(24)`) written to `~/.claude/ide/[PORT].lock` with `0o600` permissions. The `X-Claude-Code-Ide-Authorization` header is validated on every WebSocket upgrade. Host header validation prevents DNS rebinding. The lockfile is deleted on app shutdown.
+
+**Rationale:** The bridge exposes the same tools as the MCP server. Without localhost binding, auth token, and DNS rebinding protection, a remote attacker could call Wotch tools (read terminal, create checkpoints, get project info).
+
+**Enforcement:** `BridgeServer` constructor hardcodes `host: "127.0.0.1"` in `WebSocket.Server()`. `verifyClient` callback validates auth token and Host header. Lockfile written with `mode: 0o600`.
+
 ### INV-AGENT-007: Sub-Agent Depth Limit
 Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `MAX_AGENT_DEPTH = 3`. Each spawned sub-agent counts toward the global `maxConcurrentAgents` limit. Stopping a parent agent cascades to all its descendants recursively. Sub-agents inherit project context but get their own conversation loop, tool instances, and approval queue.
 
@@ -286,3 +293,4 @@ Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `M
 | 2026-03-31 | INV-SEC-017, INV-SEC-018, INV-DATA-007 | Added for Plugin SDK | Plugin vm/iframe isolation, permission boundary enforcement, plugin settings isolation |
 | 2026-03-31 | INV-AGENT-001 through INV-AGENT-006 | Added for Agent SDK | Agent process isolation, file sandbox, API key isolation, shell safety, dangerous action approval, emergency stop |
 | 2026-03-31 | INV-AGENT-007 | Added for sub-agent spawning | Depth limit, cascading stop, global concurrent limit enforcement |
+| 2026-03-31 | INV-SEC-019 | Added for IDE Bridge | Bridge WebSocket localhost-only, token auth, DNS rebinding protection, lockfile cleanup |

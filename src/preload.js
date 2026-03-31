@@ -153,6 +153,14 @@ contextBridge.exposeInMainWorld("wotch", {
     setBudget: (limit) => ipcRenderer.invoke("claude-set-budget", { limit }),
   },
 
+  // ── IDE Bridge ────────────────────────────────────────────────
+  bridgeGetStatus: () => ipcRenderer.invoke("bridge-status"),
+  bridgeRestart: () => ipcRenderer.invoke("bridge-restart"),
+  onBridgeConnection: (callback) => {
+    ipcRenderer.removeAllListeners("bridge-connection");
+    ipcRenderer.on("bridge-connection", (_e, data) => callback(data));
+  },
+
   // ── Plugin System ──────────────────────────────────────────────
   pluginList: () => ipcRenderer.invoke("plugin-list"),
   pluginEnable: (pluginId) => ipcRenderer.invoke("plugin-enable", { pluginId }),

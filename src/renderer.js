@@ -834,6 +834,12 @@ const hooksDot = document.getElementById("hooks-dot");
 const mcpDot = document.getElementById("mcp-dot");
 const btnReconfigureHooks = document.getElementById("btn-reconfigure-hooks");
 const btnReregisterMcp = document.getElementById("btn-reregister-mcp");
+// Bridge settings elements
+const setBridgeEnabled = document.getElementById("set-bridge-enabled");
+const setBridgePort = document.getElementById("set-bridge-port");
+const bridgeDot = document.getElementById("bridge-dot");
+const bridgeStatusInfo = document.getElementById("bridge-status-info");
+const btnRestartBridge = document.getElementById("btn-restart-bridge");
 // API settings elements
 const setApiEnabled = document.getElementById("set-api-enabled");
 const setApiPort = document.getElementById("set-api-port");
@@ -875,6 +881,18 @@ async function refreshIntegrationStatus() {
     }
     if (mcpDot) {
       mcpDot.className = "channel-dot " + (status.mcp.registered ? "active" : "inactive");
+    }
+  } catch { /* ignore */ }
+  // Refresh bridge status
+  try {
+    const bridge = await window.wotch.bridgeGetStatus();
+    if (bridgeDot) bridgeDot.className = "channel-dot " + (bridge.running && bridge.clients > 0 ? "active" : bridge.running ? "inactive" : "inactive");
+    if (bridgeStatusInfo) {
+      if (bridge.running) {
+        bridgeStatusInfo.textContent = `ws://127.0.0.1:${bridge.port} \u2022 ${bridge.clients} client${bridge.clients !== 1 ? "s" : ""}`;
+      } else {
+        bridgeStatusInfo.textContent = bridge.enabled ? "Not running" : "Disabled";
+      }
     }
   } catch { /* ignore */ }
   // Refresh API status
@@ -924,6 +942,9 @@ async function loadSettingsUI() {
     // Integration settings
     if (setHooksEnabled) setHooksEnabled.classList.toggle("on", s.integrationHooksEnabled !== false);
     if (setMcpEnabled) setMcpEnabled.classList.toggle("on", s.integrationMcpEnabled !== false);
+    // Bridge settings
+    if (setBridgeEnabled) setBridgeEnabled.classList.toggle("on", s.integrationBridgeEnabled !== false);
+    if (setBridgePort) setBridgePort.value = s.integrationBridgePort || 19521;
     // API settings
     if (setApiEnabled) setApiEnabled.classList.toggle("on", s.apiEnabled || false);
     if (setApiPort) setApiPort.value = s.apiPort || 19519;
@@ -956,6 +977,8 @@ function debouncedSave() {
       position: setPosition ? setPosition.value : "top",
       integrationHooksEnabled: setHooksEnabled ? setHooksEnabled.classList.contains("on") : true,
       integrationMcpEnabled: setMcpEnabled ? setMcpEnabled.classList.contains("on") : true,
+      integrationBridgeEnabled: setBridgeEnabled ? setBridgeEnabled.classList.contains("on") : true,
+      integrationBridgePort: setBridgePort ? parseInt(setBridgePort.value) || 19521 : 19521,
       apiEnabled: setApiEnabled ? setApiEnabled.classList.contains("on") : false,
       apiPort: setApiPort ? parseInt(setApiPort.value) || 19519 : 19519,
       chatDefaultModel: setChatDefaultModel ? setChatDefaultModel.value : "claude-sonnet-4-6-20250514",
@@ -1024,6 +1047,29 @@ if (btnReregisterMcp) {
       btnReregisterMcp.textContent = result.registered ? "Registered" : "Already registered";
       setTimeout(() => { btnReregisterMcp.textContent = "Re-register MCP"; }, 2000);
     }
+  });
+}
+
+// ── Bridge Settings Wiring ──
+if (setBridgeEnabled) {
+  setBridgeEnabled.addEventListener("click", () => {
+    setBridgeEnabled.classList.toggle("on");
+    debouncedSave();
+    setTimeout(refreshIntegrationStatus, 1000);
+  });
+}
+if (setBridgePort) {
+  setBridgePort.addEventListener("input", debouncedSave);
+}
+if (btnRestartBridge) {
+  btnRestartBridge.addEventListener("click", async () => {
+    btnRestartBridge.textContent = "Restarting...";
+    try {
+      await window.wotch.bridgeRestart();
+      btnRestartBridge.textContent = "Restarted";
+    } catch { btnRestartBridge.textContent = "Failed"; }
+    setTimeout(() => { btnRestartBridge.textContent = "Restart Bridge"; }, 2000);
+    refreshIntegrationStatus();
   });
 }
 

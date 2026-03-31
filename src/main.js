@@ -85,6 +85,9 @@ const DEFAULT_SETTINGS = {
   integrationMcpIpcPort: 19523,
   integrationAutoConfigureHooks: true,
   integrationAutoRegisterMCP: true,
+  // IDE Bridge
+  integrationBridgeEnabled: true,
+  integrationBridgePort: 19521,
   // Local API
   apiEnabled: false,
   apiPort: 19519,
@@ -3430,6 +3433,360 @@ class AgentManager {
 
 const agentManager = new AgentManager();
 
+// ── IDE Bridge Server ──────────────────────────────────────────────
+// Implements the Claude Code IDE bridge protocol: writes a lockfile to
+// ~/.claude/ide/[PORT].lock and runs a WebSocket server that speaks
+// MCP JSON-RPC 2.0, enabling Claude Code to discover and call Wotch tools.
+const WebSocket = require("ws");
+const IDE_LOCKFILE_DIR = path.join(os.homedir(), ".claude", "ide");
+const BRIDGE_DEFAULT_PORT = 19521;
+
+class BridgeServer {
+  constructor() {
+    this.wss = null;
+    this.port = settings.integrationBridgePort || BRIDGE_DEFAULT_PORT;
+    this.enabled = settings.integrationBridgeEnabled !== false;
+    this.authToken = crypto.randomBytes(24).toString("base64url");
+    this.lockfilePath = null;
+    this.clients = new Set();
+    this.mcpHandlers = null; // set via start()
+    this._requestId = 0;
+  }
+
+  async start(mcpHandlers) {
+    this.mcpHandlers = mcpHandlers;
+    if (!this.enabled) {
+      console.log("[wotch:bridge] Bridge disabled in settings");
+      return;
+    }
+
+    // Try port range: BRIDGE_DEFAULT_PORT to +9
+    let bound = false;
+    for (let p = this.port; p < this.port + 10; p++) {
+      try {
+        await this._listen(p);
+        this.port = p;
+        bound = true;
+        break;
+      } catch (err) {
+        if (err.code === "EADDRINUSE") continue;
+        throw err;
+      }
+    }
+    if (!bound) {
+      console.error("[wotch:bridge] Could not find available port in range");
+      return;
+    }
+
+    this._writeLockfile();
+    console.log(`[wotch:bridge] Started on ws://127.0.0.1:${this.port} (lockfile: ${this.lockfilePath})`);
+  }
+
+  _listen(port) {
+    return new Promise((resolve, reject) => {
+      const wss = new WebSocket.Server({
+        host: "127.0.0.1", // INV-SEC-019: localhost only
+        port,
+        handleProtocols: (protocols) => {
+          if (protocols.has("mcp")) return "mcp";
+          return false;
+        },
+        verifyClient: (info, cb) => {
+          // Validate auth token from header
+          const token = info.req.headers["x-claude-code-ide-authorization"];
+          if (token && token !== this.authToken) {
+            cb(false, 403, "Invalid auth token");
+            return;
+          }
+          // Validate Host header (DNS rebinding protection)
+          const host = (info.req.headers.host || "").replace(/:\d+$/, "");
+          if (!["localhost", "127.0.0.1", "[::1]", ""].includes(host)) {
+            cb(false, 403, "Invalid Host header");
+            return;
+          }
+          cb(true);
+        },
+      });
+
+      wss.on("error", (err) => {
+        if (err.code === "EADDRINUSE") {
+          wss.close();
+          reject(err);
+        }
+      });
+
+      wss.on("listening", () => {
+        this.wss = wss;
+        this._setupServer();
+        resolve();
+      });
+    });
+  }
+
+  _setupServer() {
+    this.wss.on("connection", (ws, req) => {
+      this.clients.add(ws);
+      console.log(`[wotch:bridge] Client connected (${this.clients.size} total)`);
+
+      ws.on("message", async (data) => {
+        let msg;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          ws.send(JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }));
+          return;
+        }
+
+        // JSON-RPC 2.0 notification (no id) — fire and forget
+        if (msg.id === undefined || msg.id === null) {
+          this._handleNotification(msg);
+          return;
+        }
+
+        // JSON-RPC 2.0 request
+        try {
+          const result = await this._handleRequest(msg);
+          ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+        } catch (err) {
+          ws.send(JSON.stringify({
+            jsonrpc: "2.0", id: msg.id,
+            error: { code: err.code || -32603, message: err.message },
+          }));
+        }
+      });
+
+      ws.on("close", () => {
+        this.clients.delete(ws);
+        console.log(`[wotch:bridge] Client disconnected (${this.clients.size} remaining)`);
+      });
+
+      ws.on("error", (err) => {
+        console.error("[wotch:bridge] WebSocket error:", err.message);
+        this.clients.delete(ws);
+      });
+    });
+  }
+
+  _handleNotification(msg) {
+    if (msg.method === "ide_connected") {
+      console.log(`[wotch:bridge] Claude Code connected (PID: ${msg.params?.pid || "?"})`);
+      // Notify renderer that Claude Code is connected via bridge
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("bridge-connection", { connected: true, pid: msg.params?.pid });
+      }
+    }
+  }
+
+  async _handleRequest(msg) {
+    switch (msg.method) {
+      case "initialize":
+        return {
+          protocolVersion: msg.params?.protocolVersion || "2024-11-05",
+          serverInfo: { name: "wotch", version: app.getVersion() },
+          capabilities: { tools: {} },
+        };
+
+      case "tools/list":
+        return { tools: this._getToolDefinitions() };
+
+      case "tools/call":
+        return this._executeTool(msg.params?.name, msg.params?.arguments || {});
+
+      case "resources/list":
+        return { resources: [] };
+
+      case "resources/read":
+        throw { code: -32601, message: "No resources available" };
+
+      case "prompts/list":
+        return { prompts: [] };
+
+      case "prompts/get":
+        throw { code: -32601, message: "No prompts available" };
+
+      default:
+        throw { code: -32601, message: `Method not found: ${msg.method}` };
+    }
+  }
+
+  _getToolDefinitions() {
+    return [
+      {
+        name: "wotch_checkpoint",
+        description: "Create a Wotch git checkpoint (safe, additive-only commit)",
+        inputSchema: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "Checkpoint message" },
+          },
+        },
+      },
+      {
+        name: "wotch_git_status",
+        description: "Get git repository status (branch, changed files count, checkpoint count)",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "wotch_git_diff",
+        description: "Get unified diff of current changes since last checkpoint",
+        inputSchema: {
+          type: "object",
+          properties: {
+            contextLines: { type: "number", description: "Context lines in diff (default 3)" },
+          },
+        },
+      },
+      {
+        name: "wotch_project_info",
+        description: "Get active project path and name",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "wotch_terminal_buffer",
+        description: "Read recent terminal output (ANSI-stripped)",
+        inputSchema: {
+          type: "object",
+          properties: {
+            lines: { type: "number", description: "Number of lines to read (default 50, max 500)" },
+            tabId: { type: "string", description: "Tab ID (default: active tab)" },
+          },
+        },
+      },
+      {
+        name: "wotch_notify",
+        description: "Show a desktop notification to the user",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Notification title" },
+            body: { type: "string", description: "Notification body" },
+          },
+          required: ["body"],
+        },
+      },
+      {
+        name: "wotch_list_tabs",
+        description: "List all open terminal tabs with IDs and Claude Code status",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "wotch_tab_status",
+        description: "Get Claude Code status for a specific terminal tab",
+        inputSchema: {
+          type: "object",
+          properties: {
+            tabId: { type: "string", description: "Tab ID" },
+          },
+          required: ["tabId"],
+        },
+      },
+    ];
+  }
+
+  async _executeTool(name, args) {
+    if (!this.mcpHandlers) throw { code: -32603, message: "Bridge not initialized" };
+
+    switch (name) {
+      case "wotch_checkpoint":
+        return { content: [{ type: "text", text: JSON.stringify(await this.mcpHandlers.gitCheckpoint(args)) }] };
+      case "wotch_git_status": {
+        const status = await this.mcpHandlers.gitGetStatus();
+        return { content: [{ type: "text", text: JSON.stringify(status) }] };
+      }
+      case "wotch_git_diff": {
+        const diff = await this.mcpHandlers.gitGetDiff(args);
+        return { content: [{ type: "text", text: typeof diff === "string" ? diff : JSON.stringify(diff) }] };
+      }
+      case "wotch_project_info": {
+        const info = await this.mcpHandlers.getProjectInfo();
+        return { content: [{ type: "text", text: JSON.stringify(info) }] };
+      }
+      case "wotch_terminal_buffer": {
+        const buffer = await this.mcpHandlers.terminalBuffer(args);
+        return { content: [{ type: "text", text: typeof buffer === "string" ? buffer : JSON.stringify(buffer) }] };
+      }
+      case "wotch_notify":
+        await this.mcpHandlers.notify(args);
+        return { content: [{ type: "text", text: "Notification sent" }] };
+      case "wotch_list_tabs": {
+        const tabs = await this.mcpHandlers.listTabs();
+        return { content: [{ type: "text", text: JSON.stringify(tabs) }] };
+      }
+      case "wotch_tab_status": {
+        const tabStatus = await this.mcpHandlers.tabStatus(args);
+        return { content: [{ type: "text", text: JSON.stringify(tabStatus) }] };
+      }
+      default:
+        throw { code: -32601, message: `Unknown tool: ${name}` };
+    }
+  }
+
+  _writeLockfile() {
+    try {
+      fs.mkdirSync(IDE_LOCKFILE_DIR, { recursive: true });
+      this.lockfilePath = path.join(IDE_LOCKFILE_DIR, `${this.port}.lock`);
+      const lockData = {
+        workspaceFolders: [...knownProjectPaths],
+        pid: process.pid,
+        ideName: "Wotch",
+        transport: "ws",
+        runningInWindows: IS_WIN,
+        authToken: this.authToken,
+      };
+      fs.writeFileSync(this.lockfilePath, JSON.stringify(lockData, null, 2), { mode: 0o600 });
+    } catch (err) {
+      console.error("[wotch:bridge] Failed to write lockfile:", err.message);
+    }
+  }
+
+  updateWorkspaceFolders() {
+    // Re-write lockfile when known projects change
+    if (this.lockfilePath && this.wss) this._writeLockfile();
+  }
+
+  _removeLockfile() {
+    if (this.lockfilePath) {
+      try { fs.unlinkSync(this.lockfilePath); } catch { /* already gone */ }
+      this.lockfilePath = null;
+    }
+  }
+
+  // Broadcast a notification to all connected Claude Code clients
+  broadcast(method, params) {
+    const msg = JSON.stringify({ jsonrpc: "2.0", method, params });
+    for (const ws of this.clients) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+    }
+  }
+
+  getStatus() {
+    return {
+      enabled: this.enabled,
+      running: !!this.wss,
+      port: this.port,
+      clients: this.clients.size,
+      lockfilePath: this.lockfilePath,
+    };
+  }
+
+  async stop() {
+    this._removeLockfile();
+    for (const ws of this.clients) ws.close(1000, "Shutting down");
+    this.clients.clear();
+    if (this.wss) {
+      return new Promise((resolve) => {
+        this.wss.close(() => {
+          this.wss = null;
+          console.log("[wotch:bridge] Stopped");
+          resolve();
+        });
+      });
+    }
+  }
+}
+
+const bridgeServer = new BridgeServer();
+
 // ── Integration Manager ────────────────────────────────────────────
 const integrationManager = new ClaudeIntegrationManager({
   hooksEnabled: settings.integrationHooksEnabled,
@@ -4097,6 +4454,7 @@ ipcMain.handle("get-cwd", () => os.homedir());
 ipcMain.handle("detect-projects", () => {
   const projects = detectProjects();
   for (const p of projects) knownProjectPaths.add(path.resolve(p.path));
+  bridgeServer.updateWorkspaceFolders();
   return projects;
 });
 
@@ -4143,6 +4501,7 @@ const ALLOWED_SETTING_KEYS = [
   "displayIndex", "position",
   "integrationHooksEnabled", "integrationMcpEnabled",
   "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
+  "integrationBridgeEnabled", "integrationBridgePort",
   "apiEnabled", "apiPort",
   "apiBudgetMonthly", "chatDefaultModel",
 ];
@@ -4369,6 +4728,17 @@ ipcMain.handle("integration-register-mcp", () => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+// ── IDE Bridge IPC handlers ──────────────────────────────────────────
+ipcMain.handle("bridge-status", () => bridgeServer.getStatus());
+ipcMain.handle("bridge-restart", async () => {
+  await bridgeServer.stop();
+  bridgeServer.port = settings.integrationBridgePort || BRIDGE_DEFAULT_PORT;
+  bridgeServer.enabled = settings.integrationBridgeEnabled !== false;
+  // mcpHandlers was set during initial start — reuse it
+  await bridgeServer.start(bridgeServer.mcpHandlers);
+  return bridgeServer.getStatus();
 });
 
 // ── API Server IPC handlers ─────────────────────────────────────────
@@ -4726,6 +5096,11 @@ app.whenReady().then(() => {
     console.error("[wotch] Agent system failed to start:", err.message);
   });
 
+  // ── Start IDE Bridge ──
+  bridgeServer.start(mcpHandlers).catch((err) => {
+    console.error("[wotch] IDE Bridge failed to start:", err.message);
+  });
+
   // If settings say start expanded or pinned, expand immediately
   if (settings.startExpanded || isPinned) {
     setTimeout(() => expand(), 300);
@@ -4823,6 +5198,7 @@ app.on("will-quit", () => {
   clearInterval(idleCheckInterval);
   if (apiServer) apiServer.stop().catch(() => {});
   integrationManager.stop().catch(() => {});
+  bridgeServer.stop().catch(() => {});
   pluginHost.deactivateAll().catch(() => {});
   pluginHost.stop();
   agentManager.stop();

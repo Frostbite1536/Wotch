@@ -2,14 +2,13 @@
 
 ## Overview
 
-Replace Wotch's heuristic-based Claude Code integration (regex terminal output parsing) with structured, first-party integration using two channels exposed by Claude Code's public configuration surfaces:
+Replace Wotch's heuristic-based Claude Code integration (regex terminal output parsing) with structured, first-party integration using three channels:
 
 1. **Hooks System** — Claude Code's 24 lifecycle events delivered to Wotch via `type: http` hooks configured in `~/.claude/settings.json`. Wotch receives structured JSON payloads (tool name, session ID, working directory) on every state transition — no terminal scraping needed.
 2. **MCP Server** — Wotch exposes itself as a Model Context Protocol server configured in `~/.claude.json`, giving Claude Code native tool access to Wotch capabilities (checkpoints, project context, notifications, tab management).
+3. **IDE Bridge** — Wotch writes a lockfile to `~/.claude/ide/[PORT].lock` and runs a WebSocket MCP server, positioning itself as an IDE in Claude Code's discovery system. This enables bidirectional communication using the same protocol Claude Code uses with VS Code and JetBrains.
 
-These two channels replace the fragile regex-based status detection with reliable, structured data flows — and unlock capabilities that were previously impossible (Claude Code calling Wotch tools, Wotch receiving granular lifecycle events including sub-agent activity and context compaction).
-
-> **Note on IDE bridge**: Claude Code's IDE integration (VS Code, JetBrains) uses a proprietary built-in MCP server over TCP with ephemeral lock-file auth. This protocol is not documented, not designed for third-party clients, and cannot be implemented by Wotch. See `04-bridge-adapter.md` for the full analysis and why the two-channel model is sufficient.
+These three channels replace the fragile regex-based status detection with reliable, structured data flows — and unlock capabilities that were previously impossible (Claude Code calling Wotch tools, Wotch receiving granular lifecycle events, bidirectional IDE-style integration).
 
 ---
 
@@ -37,7 +36,7 @@ These two channels replace the fragile regex-based status detection with reliabl
 ### Out of scope
 
 - Modifying Claude Code's source code (we only use public configuration surfaces)
-- Implementing Claude Code's IDE bridge protocol (proprietary, undocumented — see `04-bridge-adapter.md`)
+- ~~Implementing Claude Code's IDE bridge protocol~~ — **Now implemented**: see `04-bridge-adapter.md` for the WebSocket MCP bridge using lockfile discovery
 - Running Claude Code as a subprocess (Wotch observes Claude Code running in its terminals)
 - Replacing the terminal — Claude Code still runs in xterm.js tabs
 - Multi-user or remote Claude Code instances

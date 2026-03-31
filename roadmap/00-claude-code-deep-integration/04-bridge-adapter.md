@@ -1,160 +1,197 @@
-# Plan 0: IDE Integration & Bridge Adapter
+# Plan 0: IDE Bridge Adapter
 
 ## Overview
 
-Claude Code integrates with IDEs (VS Code, JetBrains) via a **built-in IDE MCP server** — a proprietary TCP-based server with ephemeral lock-file authentication. This is NOT a public protocol that third-party tools can implement directly.
+Claude Code integrates with IDEs (VS Code, JetBrains) via an **MCP-over-WebSocket** protocol. Each IDE writes a lockfile to `~/.claude/ide/[PORT].lock` containing workspace folders, PID, transport type, and an optional auth token. Claude Code discovers these lockfiles, connects via WebSocket, and communicates using **JSON-RPC 2.0** per the Model Context Protocol (MCP) specification.
 
-This document describes what the IDE integration actually is, what Wotch can and cannot do with it, and the alternative strategy Wotch uses instead.
+Wotch implements a compatible **BridgeServer** that positions itself as another "IDE" in Claude Code's discovery system. This gives Claude Code native, bidirectional access to Wotch's tools — making Wotch a first-class integration target alongside VS Code and JetBrains.
 
 ---
 
-## What the IDE Integration Actually Is
+## Protocol Details
 
-### Architecture
+### Discovery: Lockfile
 
-Claude Code's IDE integration consists of:
+Wotch writes a lockfile to `~/.claude/ide/[PORT].lock` on startup:
 
-1. **A built-in MCP server** running over **TCP** on `127.0.0.1` using a **random high port**
-2. **Ephemeral authentication**: Each IDE extension activation generates a fresh random auth token, written to a lock file in `~/.claude/ide/` with `0600` permissions in a `0700` directory
-3. **Platform-specific discovery**:
-   - VS Code: The extension launches a local MCP server; the CLI finds it automatically
-   - JetBrains: The plugin runs `claude` from the IDE's integrated terminal, which detects the IDE context
+```json
+{
+  "workspaceFolders": ["/path/to/project1", "/path/to/project2"],
+  "pid": 12345,
+  "ideName": "Wotch",
+  "transport": "ws",
+  "runningInWindows": true,
+  "authToken": "<random-24-byte-base64url>"
+}
+```
 
-### What It Exposes
+- **Port**: Default `19521`, configurable in settings. Falls back through +9 range if busy.
+- **Auth token**: Generated fresh each startup using `crypto.randomBytes(24).toString("base64url")`.
+- **File permissions**: `0o600` (owner read/write only).
+- **Workspace folders**: Populated from `knownProjectPaths` and updated when projects change.
+- **Cleanup**: Lockfile is deleted on app quit.
 
-The IDE MCP server exposes only **2 user-visible tools**:
+### Transport: WebSocket
+
+- **URL**: `ws://127.0.0.1:[PORT]`
+- **Subprotocol**: `mcp` (negotiated via WebSocket subprotocol header)
+- **Binding**: `127.0.0.1` only (INV-SEC-019)
+- **Auth header**: Claude Code sends `X-Claude-Code-Ide-Authorization: [token]`
+- **DNS rebinding protection**: Host header validated against localhost aliases
+
+### Protocol: MCP JSON-RPC 2.0
+
+All messages are JSON-RPC 2.0:
+
+```json
+// Request (Claude Code → Wotch)
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "wotch_checkpoint", "arguments": {} } }
+
+// Response (Wotch → Claude Code)
+{ "jsonrpc": "2.0", "id": 1, "result": { "content": [{ "type": "text", "text": "{\"success\":true}" }] } }
+
+// Notification (Claude Code → Wotch, no response expected)
+{ "jsonrpc": "2.0", "method": "ide_connected", "params": { "pid": 5678 } }
+```
+
+### MCP Methods Implemented
+
+| Method | Description |
+|--------|-------------|
+| `initialize` | Returns server info, capabilities (tools) |
+| `tools/list` | Returns 8 Wotch tool definitions |
+| `tools/call` | Executes a tool and returns result |
+| `resources/list` | Returns empty list (no resources) |
+| `prompts/list` | Returns empty list (no prompts) |
+
+### Tools Exposed
+
+Same 8 tools as the existing MCP server (shared `mcpHandlers` object):
 
 | Tool | Description |
 |------|-------------|
-| `mcp__ide__getDiagnostics` | Read-only language-server diagnostics |
-| `mcp__ide__executeCode` | Run Python code in Jupyter notebooks (with user confirmation) |
-
-Internal RPC methods (opening diffs, reading selections, saving files) exist but are **filtered out** before the tool list reaches Claude.
-
-### Why Wotch Cannot Implement This
-
-| Constraint | Impact |
-|-----------|--------|
-| Random port with lock-file discovery | No stable endpoint to connect to |
-| Ephemeral per-activation auth tokens | No way to authenticate without file access to `~/.claude/ide/` |
-| No public protocol specification | Wire protocol is undocumented and proprietary |
-| Internal tools are hidden | Rich state data (tool use, files, context) is in hidden internal RPC, not exposed tools |
-| Not designed for third parties | The extension integration is tightly coupled to VS Code/JetBrains |
+| `wotch_checkpoint` | Create git checkpoint (safe, additive commit) |
+| `wotch_git_status` | Get branch, changed files, checkpoint count |
+| `wotch_git_diff` | Get unified diff with configurable context lines |
+| `wotch_project_info` | Get active project path and name |
+| `wotch_terminal_buffer` | Read terminal output (ANSI-stripped, up to 500 lines) |
+| `wotch_notify` | Show desktop notification |
+| `wotch_list_tabs` | List terminal tabs with status |
+| `wotch_tab_status` | Get Claude Code status for specific tab |
 
 ---
 
-## Wotch's Alternative: Hooks as the "Bridge"
+## Connection Flow
 
-The original Plan 0 proposed a three-channel model (hooks + MCP + bridge). With the bridge channel not feasible, Wotch operates on a **two-channel model**:
+```
+1. Wotch starts BridgeServer
+   └─ Binds WebSocket server to 127.0.0.1:19521
+   └─ Writes lockfile: ~/.claude/ide/19521.lock
 
-1. **Hooks** (Claude Code → Wotch): Structured lifecycle events via HTTP hooks
-2. **MCP** (Wotch → Claude Code): Tool access via MCP server
+2. Claude Code starts in a Wotch terminal
+   └─ Scans ~/.claude/ide/*.lock
+   └─ Finds 19521.lock, validates workspace match
+   └─ Connects: ws://127.0.0.1:19521 (subprotocol: mcp)
+   └─ Sends header: X-Claude-Code-Ide-Authorization: <token>
 
-The good news is that Claude Code's **24 hook events** provide most of what the bridge was supposed to deliver:
+3. Handshake
+   └─ Claude Code sends: initialize { protocolVersion, clientInfo }
+   └─ Wotch responds: { serverInfo: { name: "wotch" }, capabilities: { tools: {} } }
+   └─ Claude Code sends notification: ide_connected { pid }
+   └─ Wotch logs connection, notifies renderer
 
-### What Hooks Cover (That Bridge Would Have)
+4. Tool discovery
+   └─ Claude Code sends: tools/list {}
+   └─ Wotch responds with 8 tool definitions
 
-| Bridge Capability | Hook Equivalent | Coverage |
-|------------------|-----------------|----------|
-| Real-time status | `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure` | Full |
-| Tool call tracking | `PreToolUse` (with `tool_name` + `tool_input`) | Full |
-| Sub-agent awareness | `SubagentStart`, `SubagentStop` | Full |
-| Context compression | `PreCompact`, `PostCompact` | Full |
-| Session lifecycle | `SessionStart`, `SessionEnd` | Full |
-| File change tracking | `FileChanged` | Partial (watched files only) |
-| Notifications | `Notification` | Full |
-| Error detection | `StopFailure` (with error type) | Full |
+5. Normal operation
+   └─ Claude Code calls tools via: tools/call { name, arguments }
+   └─ Wotch executes via shared mcpHandlers and returns results
 
-### What Hooks Cannot Do (Bridge Could Have)
-
-| Capability | Status | Workaround |
-|-----------|--------|------------|
-| Bidirectional context injection | Not possible with hooks | Use MCP tools — Claude Code calls `wotch_project_info`, `wotch_git_status` |
-| Real-time token usage tracking | Not available in hook payloads | Monitor via API usage tracking (Plan 2) |
-| File path + line number for edits | `tool_input` includes `file_path` for Edit/Write/Read | Partial — available in `PreToolUse` |
-| Command routing (Wotch → Claude) | Not possible with hooks | Not needed — MCP tools serve this purpose |
-
-The two-channel model covers ~90% of what the three-channel model proposed, with significantly lower implementation complexity and zero reliance on undocumented protocols.
-
----
-
-## Future: IDE MCP Server Integration
-
-If Claude Code's IDE integration protocol is ever documented or opened to third parties, Wotch could implement it as a third channel. Signs to watch for:
-
-- **Public bridge protocol spec** published by Anthropic
-- **Stable port or discovery mechanism** for third-party clients
-- **Token-based auth** that external tools can obtain
-- **Third-party IDE extension API** for registering as a bridge client
-
-Until then, the hooks + MCP architecture is the correct approach. It uses only public, documented configuration surfaces (`~/.claude/settings.json` for hooks, `~/.claude.json` for MCP) and is resilient to Claude Code version changes.
+6. Shutdown
+   └─ Wotch closes all WebSocket connections
+   └─ Deletes lockfile
+```
 
 ---
 
-## Comparison: Original Bridge Plan vs. Reality
+## Three-Channel Architecture (Updated)
 
-| Aspect | Original Plan (04-bridge-adapter.md v1) | Reality |
-|--------|----------------------------------------|---------|
-| Protocol | Custom WebSocket with handshake, state_update, tool_start, context_request messages | Proprietary TCP MCP server with hidden internal RPC |
-| Discovery | `CLAUDE_BRIDGE_PORT` environment variable | Lock file in `~/.claude/ide/` with ephemeral token |
-| Authentication | None (localhost assumption) | Random per-activation token with file-based exchange |
-| Capabilities | Rich state sync, context injection, command routing, file tracking | 2 user-visible tools (getDiagnostics, executeCode) |
-| Third-party support | Assumed implementable | Not designed for external clients |
-| Implementation effort | ~200 lines bridge-adapter.js | Not feasible without reverse engineering |
-
----
-
-## Impact on Architecture
-
-### Revised Channel Model
+With the bridge now implemented, Wotch operates a complete three-channel model:
 
 ```
 Claude Code (running in Wotch terminal)
     |
-    |--- Hooks (24 events) ──► Wotch Hook Receiver (HTTP POST localhost:19520)
+    |--- Hooks (12 events) ──► Wotch Hook Receiver (HTTP POST localhost:19520)
     |    (type: http)              |
     |                              +--> EnhancedClaudeStatusDetector
     |                              +--> Event bus (Plans 1, 3, 4)
     |                              +--> Notification forwarding
     |
-    |--- MCP ──────────────► Wotch MCP Server (stdio transport)
+    |--- MCP ──────────────► Wotch MCP Server (stdio transport, port 19523)
     |    (configured in              |
-    |     ~/.claude.json)            +--> gitCheckpoint()
-    |                                +--> gitGetStatus()
-    |                                +--> detectProjects()
-    |                                +--> terminalBuffer()
-    |                                +--> sendNotification()
+    |     ~/.claude.json)            +--> 8 tools (checkpoint, git, terminal, etc.)
+    |
+    |--- Bridge ───────────► Wotch Bridge Server (WebSocket, port 19521)
+    |    (discovered via             |
+    |     ~/.claude/ide/)            +--> Same 8 tools via MCP-over-WebSocket
+    |                                +--> Bidirectional: Wotch can broadcast to Claude Code
     |
     |--- Regex Fallback ──► Existing ClaudeStatusDetector
          (PTY output)           (used when hooks unavailable)
 ```
 
-### Files Removed
+### Channel Comparison
 
-The standalone `src/bridge-adapter.js` file is **not created**. The `ClaudeIntegrationManager` manages only two channels (hooks + MCP) plus the regex fallback.
+| Channel | Direction | Transport | Discovery | Auth |
+|---------|-----------|-----------|-----------|------|
+| Hooks | Claude Code → Wotch | HTTP POST | `~/.claude/settings.json` | None (localhost) |
+| MCP | Claude Code → Wotch | stdio + TCP IPC | `~/.claude.json` | None (localhost) |
+| Bridge | Bidirectional | WebSocket | `~/.claude/ide/*.lock` | Token in header |
+| Regex | Claude Code → Wotch | PTY output | Always on | N/A |
 
-### Settings Simplified
+### Why Three Channels?
+
+- **Hooks**: Best for real-time status events (PreToolUse, SubagentStart, etc.). Fire-and-forget, low latency.
+- **MCP**: Best for tool calls initiated by Claude Code. Works via stdio, no port conflicts.
+- **Bridge**: Best for bidirectional communication. Wotch can broadcast to Claude Code. Uses the standard IDE integration path that Claude Code already supports.
+
+The bridge and MCP channels expose the same tools. The bridge adds:
+- **Bidirectional broadcasting**: Wotch can push notifications/events to Claude Code
+- **Standard IDE integration**: Claude Code discovers Wotch like any IDE, no manual config needed
+- **WebSocket persistence**: Long-lived connection vs. MCP's per-request model
+
+---
+
+## Settings
 
 ```json
 {
-  "integration": {
-    "hooksEnabled": true,
-    "hooksPort": 19520,
-    "mcpEnabled": true,
-    "mcpTransport": "stdio",
-    "autoConfigureHooks": true,
-    "autoRegisterMCP": true
-  }
+  "integrationBridgeEnabled": true,
+  "integrationBridgePort": 19521
 }
 ```
 
-No `bridgeEnabled`, `bridgePort`, or bridge-related settings.
+---
 
-### Status Detection: Two Sources + Fallback
+## Security
 
-The `EnhancedClaudeStatusDetector` operates with two priority sources instead of three:
+- **INV-SEC-019**: Bridge WebSocket binds to `127.0.0.1` only
+- Auth token validated via `X-Claude-Code-Ide-Authorization` header
+- DNS rebinding protection via Host header validation
+- Lockfile written with `0o600` permissions
+- Token generated with `crypto.randomBytes(24)` per startup
+- Lockfile cleaned up on shutdown
 
-1. **Hooks** (Priority 1) — structured events, ~100-200ms latency
-2. **Regex fallback** (Priority 2) — heuristic, always available
+---
 
-See `05-enhanced-status-detection.md` for the updated fusion logic.
+## Implementation
+
+All bridge code lives in `src/main.js` as the `BridgeServer` class, following the codebase convention. Key components:
+
+- **BridgeServer class**: WebSocket server, lockfile management, JSON-RPC handler
+- **Shared mcpHandlers**: Same tool implementations used by the MCP stdio server
+- **Settings**: `integrationBridgeEnabled`, `integrationBridgePort` in DEFAULT_SETTINGS
+- **IPC**: `bridge-status`, `bridge-restart` handlers
+- **Preload**: `bridgeGetStatus()`, `bridgeRestart()`, `onBridgeStatus()`
+- **UI**: Bridge toggle, port input, status indicator, restart button in Settings

@@ -17,6 +17,8 @@ Replace Wotch's heuristic regex-based Claude Code detection with structured, fir
 - MCP server exposing Wotch tools (checkpoints, git status, notifications) to Claude Code
 - Enhanced multi-source status detector with hook priority and regex fallback
 - Auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP)
+- IDE Bridge adapter: WebSocket MCP server with lockfile discovery at `~/.claude/ide/`
+- Three-channel architecture: hooks (events) + MCP (tools) + bridge (bidirectional)
 - Settings UI for per-channel enable/disable and health monitoring
 
 ---
@@ -94,7 +96,8 @@ The five plans have natural dependencies. Plan 0 is the new prerequisite that pr
 Plan 0 (Deep Integration) ─────────────────────────────────┐
    ↓                                                        │
    ├── hooks → structured status for Plan 1 API             │
-   └── MCP → tool access for Plans 2, 4                     │
+   ├── MCP → tool access for Plans 2, 4                     │
+   └── bridge → bidirectional IDE integration               │
                                                             │
 Plan 1 (Local API)  ── exposes hook-sourced data ──────────┤
    ↓                                                        │

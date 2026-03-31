@@ -2,19 +2,19 @@
 
 ## System Overview
 
-Plan 0 introduces two structured communication channels between Wotch and Claude Code, replacing the current regex-based terminal output parsing. Each channel serves a distinct purpose and operates independently, allowing graceful degradation if either is unavailable.
+Plan 0 introduces three structured communication channels between Wotch and Claude Code, replacing the current regex-based terminal output parsing. Each channel serves a distinct purpose and operates independently, allowing graceful degradation if any is unavailable.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Wotch Main Process                       │
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐                             │
-│  │ Hook Receiver │  │  MCP IPC     │                             │
-│  │ (HTTP :19520) │  │  Server      │                             │
-│  │               │  │  (TCP :19523)│                             │
-│  └──────┬───────┘  └──────┬───────┘                             │
-│         │                 │                                      │
-│         ▼                 ▼                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐            │
+│  │ Hook Receiver │  │  MCP IPC     │  │ IDE Bridge   │            │
+│  │ (HTTP :19520) │  │  Server      │  │ (WS :19521)  │            │
+│  │               │  │  (TCP :19523)│  │              │            │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘            │
+│         │                 │                 │                    │
+│         ▼                 ▼                 ▼                    │
 │  ┌─────────────────────────────────────────────────────────┐    │
 │  │                    Event Bus                             │    │
 │  │  (ClaudeIntegrationManager)                              │    │
@@ -34,22 +34,23 @@ Plan 0 introduces two structured communication channels between Wotch and Claude
 │  │   are unavailable)                                    │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
-         ▲                 ▲
-         │                 │
-    Hook Events        MCP Calls
-    (HTTP POST)        (stdio JSON-RPC)
-         │                 │
+         ▲                 ▲                 ▲
+         │                 │                 │
+    Hook Events        MCP Calls       IDE Bridge
+    (HTTP POST)        (stdio JSON-RPC) (WS MCP)
+         │                 │                 │
 ┌─────────────────────────────────────────────────────────────────┐
 │              Claude Code (running in xterm.js tab)              │
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐                             │
-│  │ Hook System  │  │  MCP Client  │                             │
-│  │ (type: http) │  │  (built-in)  │                             │
-│  └──────────────┘  └──────────────┘                             │
-│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ Hook System  │  │  MCP Client  │  │ IDE Bridge   │          │
+│  │ (type: http) │  │  (built-in)  │  │ (~/.claude/  │          │
+│  └──────────────┘  └──────────────┘  │  ide/*.lock) │          │
+│                                       └──────────────┘          │
 │  Config sources:                                                │
 │  - ~/.claude/settings.json (hooks)                              │
 │  - ~/.claude.json (MCP servers)                                 │
+│  - ~/.claude/ide/*.lock (IDE bridge discovery)                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

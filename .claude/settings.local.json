@@ -52,7 +52,8 @@
       "Bash(/tmp/accurate_audit.sh:*)",
       "Bash(bash /tmp/accurate_audit.sh)",
       "Bash(/tmp/plugin_panel_check.sh:*)",
-      "Bash(bash /tmp/plugin_panel_check.sh)"
+      "Bash(bash /tmp/plugin_panel_check.sh)",
+      "Bash(grep -E \"^\\\\| \\\\`agent-\" /c/Users/LCM/Documents/wotch/wotch/roadmap/04-agent-sdk-integration/01-architecture.md)"
     ]
   }
 }
