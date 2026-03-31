@@ -57,6 +57,7 @@
     "electron-updater": "^6.0.0",
     "node-pty": "^1.0.0",
     "ssh2": "^1.17.0",
+    "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

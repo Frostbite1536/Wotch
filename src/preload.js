@@ -108,6 +108,11 @@ contextBridge.exposeInMainWorld("wotch", {
   configureHooks: () => ipcRenderer.invoke("integration-configure-hooks"),
   registerMCP: () => ipcRenderer.invoke("integration-register-mcp"),
 
+  // ── Local API ──────────────────────────────────────────────────
+  apiGetInfo: () => ipcRenderer.invoke("api-get-info"),
+  apiCopyToken: () => ipcRenderer.invoke("api-copy-token"),
+  apiRegenerateToken: () => ipcRenderer.invoke("api-regenerate-token"),
+
   // Terminal buffer read (used by MCP server via main process)
   onTerminalBufferRead: (callback) => {
     ipcRenderer.removeAllListeners("terminal-buffer-read");

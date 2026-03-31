@@ -143,6 +143,41 @@ The MCP IPC TCP server must bind to `127.0.0.1` only, same as INV-SEC-006.
 
 **Enforcement:** `MCPIPCServer` hardcodes `'127.0.0.1'` in `server.listen()`.
 
+### INV-SEC-009: API Localhost Binding
+The API server must bind exclusively to `127.0.0.1`. It must never listen on `0.0.0.0`, `::`, or any network interface. The `server.listen()` call must always specify `'127.0.0.1'` as the hostname.
+
+**Rationale:** Network-accessible API with bearer token auth (no TLS) would expose the token and all terminal data to network sniffers.
+
+**Enforcement:** Code review. The listen call must include the hostname parameter.
+
+### INV-SEC-010: API Token Storage Permissions
+The `~/.wotch/api-token` file must be written with mode `0o600` (owner read/write only). The token must never be logged, sent to the renderer (except via explicit `api-copy-token` IPC), or included in error messages.
+
+**Rationale:** The token is the sole authorization mechanism for the API. Exposure compromises all API-accessible data.
+
+**Enforcement:** Code review. Check `fs.writeFileSync` calls for the token file.
+
+### INV-SEC-011: DNS Rebinding Protection
+Every HTTP request and WebSocket upgrade must validate the `Host` header against a whitelist of localhost aliases (`localhost`, `127.0.0.1`, `[::1]`, with optional port). Requests with any other Host value must be rejected with 403 before any processing occurs.
+
+**Rationale:** DNS rebinding attacks can bypass the localhost binding by making the browser send requests to `127.0.0.1` with a malicious Host header.
+
+**Enforcement:** Code review. The validation function must run before routing, auth, and body parsing.
+
+### INV-SEC-012: API Token Comparison
+API token comparison must use `crypto.timingSafeEqual()`, not `===` or `.includes()`. This applies to both HTTP bearer token validation and WebSocket auth message validation.
+
+**Rationale:** Timing side-channels in string comparison can leak token bytes one at a time.
+
+**Enforcement:** Code review.
+
+### INV-SEC-013: No SSH Profile Exposure via API
+The API must never include `settings.sshProfiles` in any response or WebSocket event. The `GET /v1/settings` endpoint must strip it. The `PATCH /v1/settings` endpoint must reject it. The `settings:changed` WebSocket event must exclude it.
+
+**Rationale:** SSH profiles contain hostnames, usernames, and key file paths. Combined with terminal access, this could facilitate lateral movement by a compromised local process.
+
+**Enforcement:** Code review. Grep for `sshProfiles` in `api-server.js`.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -153,3 +188,4 @@ The MCP IPC TCP server must bind to `127.0.0.1` only, same as INV-SEC-006.
 | 2026-03-28 | INV-UX-002 | Updated for customizable position | Pill can sit on top, left, or right edge; uses workArea for accurate placement; clamps expanded panel to screen bounds |
 | 2026-03-28 | INV-SEC-005, INV-DATA-004, INV-DATA-005 | Added for SSH support | SSH credentials never persisted; SSH session map follows same cleanup pattern as PTY map; sshProfiles isolated from general settings saves |
 | 2026-03-31 | INV-SEC-006, INV-SEC-007, INV-SEC-008 | Added for Claude Code deep integration | Hook receiver and MCP IPC server localhost-only; MCP tools read-only + additive |
+| 2026-03-31 | INV-SEC-009 through INV-SEC-013 | Added for Local API | API localhost-only, token file permissions, DNS rebinding protection, timing-safe comparison, SSH profile redaction |

@@ -1345,6 +1345,32 @@
             <button class="settings-reset-btn" id="btn-reregister-mcp">Re-register MCP</button>
           </div>
         </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Local API</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="api-dot"></span>
+                Enable API Server
+              </div>
+            </div>
+            <button class="setting-toggle" id="set-api-enabled"></button>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Port</div></div>
+            <input type="number" class="setting-input" id="set-api-port" min="1024" max="65535" value="19519">
+          </div>
+          <div class="setting-row" id="api-token-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
+            <div class="setting-label">API Token</div>
+            <div style="display:flex;align-items:center;gap:6px;width:100%;">
+              <code id="api-token-display" style="flex:1;font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">---</code>
+              <button class="settings-reset-btn" id="btn-api-show-token" style="font-size:10px;">Show</button>
+              <button class="settings-reset-btn" id="btn-api-copy-token" style="font-size:10px;">Copy</button>
+              <button class="settings-reset-btn" id="btn-api-regen-token" style="font-size:10px;color:#f87171;">Regenerate</button>
+            </div>
+          </div>
+          <div id="api-status-info" style="font-size:10px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
       </div>
       <div class="settings-footer">
         <button class="settings-reset-btn" id="btn-settings-reset">Reset to defaults</button>

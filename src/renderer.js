@@ -812,6 +812,15 @@ const hooksDot = document.getElementById("hooks-dot");
 const mcpDot = document.getElementById("mcp-dot");
 const btnReconfigureHooks = document.getElementById("btn-reconfigure-hooks");
 const btnReregisterMcp = document.getElementById("btn-reregister-mcp");
+// API settings elements
+const setApiEnabled = document.getElementById("set-api-enabled");
+const setApiPort = document.getElementById("set-api-port");
+const apiDot = document.getElementById("api-dot");
+const apiTokenDisplay = document.getElementById("api-token-display");
+const btnApiShowToken = document.getElementById("btn-api-show-token");
+const btnApiCopyToken = document.getElementById("btn-api-copy-token");
+const btnApiRegenToken = document.getElementById("btn-api-regen-token");
+const apiStatusInfo = document.getElementById("api-status-info");
 
 let integrationPollTimer = null;
 
@@ -845,6 +854,23 @@ async function refreshIntegrationStatus() {
       mcpDot.className = "channel-dot " + (status.mcp.registered ? "active" : "inactive");
     }
   } catch { /* ignore */ }
+  // Refresh API status
+  try {
+    const apiInfo = await window.wotch.apiGetInfo();
+    if (apiDot) {
+      apiDot.className = "channel-dot " + (apiInfo.running ? "active" : "inactive");
+    }
+    if (apiTokenDisplay && apiInfo.tokenMasked) {
+      apiTokenDisplay.textContent = apiInfo.tokenMasked;
+    }
+    if (apiStatusInfo) {
+      if (apiInfo.running) {
+        apiStatusInfo.textContent = `Listening on 127.0.0.1:${apiInfo.port} \u2022 ${apiInfo.connections} WS connection${apiInfo.connections !== 1 ? "s" : ""}`;
+      } else {
+        apiStatusInfo.textContent = "Server not running";
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 async function loadSettingsUI() {
@@ -875,6 +901,9 @@ async function loadSettingsUI() {
     // Integration settings
     if (setHooksEnabled) setHooksEnabled.classList.toggle("on", s.integrationHooksEnabled !== false);
     if (setMcpEnabled) setMcpEnabled.classList.toggle("on", s.integrationMcpEnabled !== false);
+    // API settings
+    if (setApiEnabled) setApiEnabled.classList.toggle("on", s.apiEnabled || false);
+    if (setApiPort) setApiPort.value = s.apiPort || 19519;
     refreshIntegrationStatus();
   } catch { /* ignore */ }
 }
@@ -899,6 +928,8 @@ function debouncedSave() {
       position: setPosition ? setPosition.value : "top",
       integrationHooksEnabled: setHooksEnabled ? setHooksEnabled.classList.contains("on") : true,
       integrationMcpEnabled: setMcpEnabled ? setMcpEnabled.classList.contains("on") : true,
+      apiEnabled: setApiEnabled ? setApiEnabled.classList.contains("on") : false,
+      apiPort: setApiPort ? parseInt(setApiPort.value) || 19519 : 19519,
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -963,6 +994,70 @@ if (btnReregisterMcp) {
     if (result.success) {
       btnReregisterMcp.textContent = result.registered ? "Registered" : "Already registered";
       setTimeout(() => { btnReregisterMcp.textContent = "Re-register MCP"; }, 2000);
+    }
+  });
+}
+
+// ── API Settings Wiring ──
+if (setApiEnabled) {
+  setApiEnabled.addEventListener("click", () => {
+    setApiEnabled.classList.toggle("on");
+    debouncedSave();
+    // Refresh status after a brief delay for the server to start/stop
+    setTimeout(refreshIntegrationStatus, 1000);
+  });
+}
+if (setApiPort) {
+  setApiPort.addEventListener("input", debouncedSave);
+}
+if (btnApiShowToken) {
+  let tokenVisible = false;
+  btnApiShowToken.addEventListener("click", async () => {
+    if (tokenVisible) {
+      // Hide it
+      try {
+        const info = await window.wotch.apiGetInfo();
+        if (apiTokenDisplay) apiTokenDisplay.textContent = info.tokenMasked || "---";
+      } catch { /* ignore */ }
+      btnApiShowToken.textContent = "Show";
+      tokenVisible = false;
+    } else {
+      // Show full token
+      try {
+        const token = await window.wotch.apiCopyToken();
+        if (apiTokenDisplay && token) apiTokenDisplay.textContent = token;
+      } catch { /* ignore */ }
+      btnApiShowToken.textContent = "Hide";
+      tokenVisible = true;
+    }
+  });
+}
+if (btnApiCopyToken) {
+  btnApiCopyToken.addEventListener("click", async () => {
+    try {
+      const token = await window.wotch.apiCopyToken();
+      if (token) {
+        await navigator.clipboard.writeText(token);
+        btnApiCopyToken.textContent = "Copied!";
+        setTimeout(() => { btnApiCopyToken.textContent = "Copy"; }, 2000);
+      }
+    } catch {
+      btnApiCopyToken.textContent = "Failed";
+      setTimeout(() => { btnApiCopyToken.textContent = "Copy"; }, 2000);
+    }
+  });
+}
+if (btnApiRegenToken) {
+  btnApiRegenToken.addEventListener("click", async () => {
+    try {
+      const masked = await window.wotch.apiRegenerateToken();
+      if (apiTokenDisplay) apiTokenDisplay.textContent = masked || "---";
+      btnApiRegenToken.textContent = "Done!";
+      setTimeout(() => { btnApiRegenToken.textContent = "Regenerate"; }, 2000);
+      refreshIntegrationStatus();
+    } catch {
+      btnApiRegenToken.textContent = "Failed";
+      setTimeout(() => { btnApiRegenToken.textContent = "Regenerate"; }, 2000);
     }
   });
 }
@@ -1340,6 +1435,20 @@ const COMMANDS = [
   { name: "Scan Projects", shortcut: "", action: () => loadProjects() },
   { name: "SSH: Connect to Remote", shortcut: "", action: () => showSshConnectDialog() },
   { name: "SSH: Manage Connections", shortcut: "", action: () => openSettings() },
+  { name: "API: Copy Token", shortcut: "", action: async () => {
+    try {
+      const token = await window.wotch.apiCopyToken();
+      if (token) { await navigator.clipboard.writeText(token); showToast("API token copied", "info"); }
+      else showToast("API server not running", "error");
+    } catch { showToast("Failed to copy token", "error"); }
+  }},
+  { name: "API: Toggle Server", shortcut: "", action: async () => {
+    const s = await window.wotch.getSettings();
+    await window.wotch.saveSettings({ apiEnabled: !s.apiEnabled });
+    showToast(s.apiEnabled ? "API server disabled" : "API server enabled", "info");
+    if (setApiEnabled) setApiEnabled.classList.toggle("on", !s.apiEnabled);
+    setTimeout(refreshIntegrationStatus, 1000);
+  }},
 ];
 
 function openPalette() {

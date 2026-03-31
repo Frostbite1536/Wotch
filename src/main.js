@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
 const { Client: SSHClient } = require("ssh2");
 const { ClaudeIntegrationManager } = require("./claude-integration-manager");
+const { ApiServer } = require("./api-server");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -83,6 +84,9 @@ const DEFAULT_SETTINGS = {
   integrationMcpIpcPort: 19523,
   integrationAutoConfigureHooks: true,
   integrationAutoRegisterMCP: true,
+  // Local API
+  apiEnabled: false,
+  apiPort: 19519,
 };
 
 function loadSettings() {
@@ -475,6 +479,11 @@ function createPty(tabId, cwd) {
     }
     // Feed data to status detector
     claudeStatus.feed(tabId, data);
+    // Feed to API server terminal buffer + broadcast
+    if (apiServer && apiServer.running) {
+      apiServer.addTerminalData(tabId, data);
+      apiServer.broadcastEvent("terminal:output", { tabId, output: data, format: "raw" });
+    }
   });
 
   ptyProc.onExit(({ exitCode }) => {
@@ -484,11 +493,20 @@ function createPty(tabId, cwd) {
     ptyProcesses.delete(tabId);
     claudeStatus.removeTab(tabId);
     integrationManager.removeTab(tabId);
+    // API: broadcast tab closed + clean up buffer
+    if (apiServer && apiServer.running) {
+      apiServer.broadcastEvent("tab:lifecycle", { action: "closed", tabId, tabType: "pty", exitCode });
+      apiServer.removeTerminalBuffer(tabId);
+    }
   });
 
   ptyProcesses.set(tabId, ptyProc);
   claudeStatus.addTab(tabId);
   integrationManager.addTab(tabId, startDir);
+  // API: broadcast tab created
+  if (apiServer && apiServer.running) {
+    apiServer.broadcastEvent("tab:lifecycle", { action: "created", tabId, tabType: "pty", cwd: startDir });
+  }
   return tabId;
 }
 
@@ -603,6 +621,11 @@ async function createSshSession(tabId, profileId, password, reconnectAttempts = 
           const str = data.toString();
           sendToTab(tabId, str);
           claudeStatus.feed(tabId, str);
+          // API: buffer + broadcast
+          if (apiServer && apiServer.running) {
+            apiServer.addTerminalData(tabId, str);
+            apiServer.broadcastEvent("terminal:output", { tabId, output: str, format: "raw" });
+          }
         });
 
         stream.on("close", () => {
@@ -1065,6 +1088,107 @@ integrationManager.on("notification", (event) => {
   }
 });
 
+// ── API Server ────────────────────────────────────────────────────
+let apiServer = null;
+
+function createApiServer() {
+  apiServer = new ApiServer({
+    ptyProcesses,
+    sshSessions,
+    integrationManager,
+    mainWindow: () => mainWindow,
+    createPty,
+    killTab: (tabId) => {
+      const p = ptyProcesses.get(tabId);
+      if (p) { p.kill(); ptyProcesses.delete(tabId); }
+      const s = sshSessions.get(tabId);
+      if (s) {
+        s.userKilled = true;
+        if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+        if (s.stream) s.stream.close();
+        if (s.client) s.client.end();
+        sshSessions.delete(tabId);
+      }
+      claudeStatus.removeTab(tabId);
+      integrationManager.removeTab(tabId);
+    },
+    writePty: (tabId, data) => {
+      const p = ptyProcesses.get(tabId);
+      if (p) { p.write(data); return; }
+      const s = sshSessions.get(tabId);
+      if (s && s.stream) s.stream.write(data);
+    },
+    detectProjects,
+    gitCheckpoint,
+    gitGetStatus,
+    gitListCheckpoints,
+    gitDiff: gitDiffForApi,
+    loadSettings: () => ({ ...settings }),
+    saveSettingsFn: (newSettings, source) => {
+      const prev = { ...settings };
+      for (const key of ALLOWED_SETTING_KEYS) {
+        if (key in newSettings) settings[key] = newSettings[key];
+      }
+      saveSettings(settings);
+
+      // Broadcast settings change
+      if (apiServer) {
+        const changed = {};
+        for (const key of Object.keys(newSettings)) {
+          if (key !== "sshProfiles") changed[key] = newSettings[key];
+        }
+        apiServer.broadcastEvent("settings:changed", { changed, source: source || "api" });
+      }
+
+      // Reposition window if needed
+      const positionChanged = prev.position !== settings.position;
+      if (positionChanged && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+        mainWindow.webContents.send("position-changed", settings.position || "top");
+      } else if (isExpanded && mainWindow && (
+        prev.expandedWidth !== settings.expandedWidth ||
+        prev.expandedHeight !== settings.expandedHeight
+      )) {
+        mainWindow.setBounds(getExpandedBounds(), true);
+      }
+    },
+    resetSettingsFn: () => {
+      const preservedProfiles = settings.sshProfiles;
+      settings = { ...DEFAULT_SETTINGS };
+      settings.sshProfiles = preservedProfiles;
+      saveSettings(settings);
+      isPinned = false;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBounds(isExpanded ? getExpandedBounds() : getPillBounds(), true);
+        mainWindow.webContents.send("pin-state", false);
+        mainWindow.webContents.send("position-changed", settings.position || "top");
+      }
+      return { ...settings };
+    },
+    setPinned,
+    getExpansionState: () => ({ expanded: isExpanded, pinned: isPinned }),
+    getPlatformInfo: () => ({
+      platform: os.platform(),
+      isMac: IS_MAC,
+      isWayland: WAYLAND,
+      waylandCursorBroken,
+      hasNotch: HAS_NOTCH,
+    }),
+  });
+}
+
+// Wire integration manager status changes to API WebSocket
+integrationManager.on("status-changed", (tabId, status) => {
+  if (apiServer && apiServer.running) {
+    const aggregate = integrationManager.getAggregateStatus();
+    const tabs = {};
+    for (const [tid] of integrationManager.statusDetector.tabs) {
+      tabs[tid] = integrationManager.getStatus(tid);
+    }
+    apiServer.broadcastEvent("claude:status", { aggregate, tabs });
+  }
+});
+
 // Also detect idle timeout — if no output for 5s while in thinking/working, might be done
 const idleCheckInterval = setInterval(() => {
   const now = Date.now();
@@ -1498,6 +1622,53 @@ function gitGetStatus(projectPath) {
   }
 }
 
+function gitListCheckpoints(projectPath, limit = 20) {
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectPath, encoding: "utf-8", timeout: 5000 });
+  } catch {
+    return { projectPath, checkpoints: [], totalCount: 0 };
+  }
+  try {
+    const output = execFileSync("git", ["log", `--max-count=${limit}`, "--grep=wotch-checkpoint", "--format=%H %ai %s"], {
+      cwd: projectPath, encoding: "utf-8", timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    if (!output) return { projectPath, checkpoints: [], totalCount: 0 };
+    const checkpoints = output.split("\n").map((line) => {
+      const hash = line.slice(0, 40);
+      const rest = line.slice(41);
+      const dateEnd = rest.indexOf(" ", rest.indexOf(" ") + 1);
+      const dateStr = rest.slice(0, rest.indexOf(" +") !== -1 ? rest.indexOf(" +") + 6 : dateEnd);
+      const message = rest.slice(dateStr.length).trim();
+      return { hash: hash.slice(0, 7), message, date: new Date(dateStr).toISOString() };
+    });
+    // Get total count
+    let totalCount = checkpoints.length;
+    try {
+      const countOutput = execFileSync("git", ["log", "--oneline", "--grep=wotch-checkpoint"], {
+        cwd: projectPath, encoding: "utf-8", timeout: 5000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      totalCount = countOutput ? countOutput.split("\n").length : 0;
+    } catch { /* ignore */ }
+    return { projectPath, checkpoints, totalCount };
+  } catch {
+    return { projectPath, checkpoints: [], totalCount: 0 };
+  }
+}
+
+function gitDiffForApi(projectPath, mode) {
+  try {
+    const args = mode === "last-checkpoint" ? ["diff", "HEAD~1"] : ["diff"];
+    return execFileSync("git", args, {
+      cwd: projectPath, encoding: "utf-8", timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    }) || "(no changes)";
+  } catch (err) {
+    return `Error: ${err.message}`;
+  }
+}
+
 // ── IPC handlers ────────────────────────────────────────────────────
 ipcMain.handle("pty-create", (_event, { tabId, cwd }) => {
   return createPty(tabId, cwd);
@@ -1549,7 +1720,19 @@ ipcMain.handle("detect-projects", () => {
 // Git checkpoint
 ipcMain.handle("git-checkpoint", (_event, { projectPath, message }) => {
   if (!isKnownProjectPath(projectPath)) return { success: false, message: "Unknown project path" };
-  return gitCheckpoint(projectPath, message);
+  const result = gitCheckpoint(projectPath, message);
+  // Broadcast checkpoint event via API
+  if (result.success && apiServer && apiServer.running) {
+    apiServer.broadcastEvent("git:checkpoint", {
+      projectPath,
+      success: true,
+      hash: result.details.hash,
+      branch: result.details.branch,
+      changedFiles: result.details.changedFiles,
+      message: result.details.commitMessage,
+    });
+  }
+  return result;
 });
 
 // Git status
@@ -1577,6 +1760,7 @@ const ALLOWED_SETTING_KEYS = [
   "displayIndex", "position",
   "integrationHooksEnabled", "integrationMcpEnabled",
   "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
+  "apiEnabled", "apiPort",
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -1616,6 +1800,26 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
     prev.expandedHeight !== settings.expandedHeight
   )) {
     mainWindow.setBounds(getExpandedBounds(), true);
+  }
+
+  // API server: handle enable/disable and port changes from UI
+  if (apiServer) {
+    // Broadcast settings change event
+    const changed = {};
+    for (const key of ALLOWED_SETTING_KEYS) {
+      if (key in newSettings && key !== "sshProfiles") changed[key] = newSettings[key];
+    }
+    if (Object.keys(changed).length > 0) {
+      apiServer.broadcastEvent("settings:changed", { changed, source: "ui" });
+    }
+
+    if (prev.apiEnabled && !settings.apiEnabled) {
+      apiServer.stop().catch(() => {});
+    } else if (!prev.apiEnabled && settings.apiEnabled) {
+      apiServer.start().catch((err) => console.error("[wotch] API server start failed:", err.message));
+    } else if (settings.apiEnabled && prev.apiPort !== settings.apiPort) {
+      apiServer.restart().catch((err) => console.error("[wotch] API server restart failed:", err.message));
+    }
   }
 
   return ok;
@@ -1682,6 +1886,22 @@ ipcMain.handle("integration-register-mcp", () => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+// ── API Server IPC handlers ─────────────────────────────────────────
+ipcMain.handle("api-get-info", () => {
+  if (!apiServer) return { running: false, port: null, tokenMasked: null, connections: 0 };
+  return apiServer.getInfo();
+});
+
+ipcMain.handle("api-copy-token", () => {
+  if (!apiServer) return null;
+  return apiServer.getToken();
+});
+
+ipcMain.handle("api-regenerate-token", () => {
+  if (!apiServer) return null;
+  return apiServer.regenerateToken();
 });
 
 // Terminal buffer read — used by MCP server to read xterm.js content
@@ -1904,6 +2124,14 @@ app.whenReady().then(() => {
     console.error("[wotch] Integration manager failed to start:", err.message);
   });
 
+  // ── Start API Server ──
+  createApiServer();
+  if (settings.apiEnabled) {
+    apiServer.start().catch((err) => {
+      console.error("[wotch] API server failed to start:", err.message);
+    });
+  }
+
   // If settings say start expanded or pinned, expand immediately
   if (settings.startExpanded || isPinned) {
     setTimeout(() => expand(), 300);
@@ -1991,6 +2219,7 @@ app.whenReady().then(() => {
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   clearInterval(idleCheckInterval);
+  if (apiServer) apiServer.stop().catch(() => {});
   integrationManager.stop().catch(() => {});
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
