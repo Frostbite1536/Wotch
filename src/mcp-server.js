@@ -107,10 +107,10 @@ async function main() {
     { message: z.string().optional().describe("Optional checkpoint message. Defaults to timestamp.") },
     async ({ message }) => {
       const result = await callWotch("gitCheckpoint", { message });
-      if (typeof result === "object") {
+      if (result && typeof result === "object") {
         return { content: [{ type: "text", text: result.message || JSON.stringify(result) }] };
       }
-      return { content: [{ type: "text", text: String(result) }] };
+      return { content: [{ type: "text", text: String(result || "No result") }] };
     }
   );
 

@@ -187,6 +187,11 @@ class ClaudeIntegrationManager extends EventEmitter {
       return;
     }
 
+    // Clean up session mapping on SessionEnd
+    if (event.eventType === "SessionEnd") {
+      this.sessionTabMap.delete(event.session_id);
+    }
+
     // Map hook event to status update
     const mapped = mapHookToStatus(event);
     if (mapped) {
@@ -208,11 +213,20 @@ class ClaudeIntegrationManager extends EventEmitter {
   // TCP server that the standalone mcp-server.js connects to for data access
 
   _startMCPIpcServer(handlers) {
+    const MAX_IPC_BUFFER = 65536; // 64KB per connection
+
     this.mcpIpcServer = net.createServer((socket) => {
       let buffer = "";
+      socket.setTimeout(30000); // 30s idle timeout
+      socket.on("timeout", () => socket.destroy());
 
       socket.on("data", (data) => {
         buffer += data.toString();
+        if (buffer.length > MAX_IPC_BUFFER) {
+          console.error("[wotch] MCP IPC buffer overflow, closing connection");
+          socket.destroy();
+          return;
+        }
         const lines = buffer.split("\n");
         buffer = lines.pop(); // Keep incomplete line in buffer
 
