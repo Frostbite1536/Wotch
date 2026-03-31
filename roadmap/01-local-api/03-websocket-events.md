@@ -247,7 +247,7 @@ Emitted when Claude Code status changes on any tab. Debounced to at most one eve
 
 | Field | Type | Description |
 |---|---|---|
-| `state` | string | `"idle"`, `"thinking"`, `"working"`, `"waiting"`, `"error"` |
+| `state` | string | `"idle"`, `"thinking"`, `"working"`, `"waiting"`, `"done"`, `"error"` |
 | `description` | string | Human-readable status description |
 | `source` | string | `"hooks"` or `"regex"` or `"timeout"` — which detection channel produced this status |
 | `tool` | string\|null | Active tool name (e.g. `"Edit"`, `"Bash"`, `"Read"`) or `null` if idle |

@@ -382,7 +382,7 @@ Two new fields in `DEFAULT_SETTINGS`:
 ```javascript
 const DEFAULT_SETTINGS = {
   // ... existing fields ...
-  apiEnabled: true,    // Whether the API server starts with the app
+  apiEnabled: false,   // Whether the API server starts with the app (opt-in for security)
   apiPort: 19519,      // Port to listen on (will try +1 through +10 on conflict)
 };
 ```

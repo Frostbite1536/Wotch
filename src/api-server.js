@@ -542,14 +542,24 @@ class ApiServer extends EventEmitter {
   }
 
   _heartbeat() {
-    for (const [ws] of this.wsClients) {
+    for (const [ws, client] of this.wsClients) {
       if (ws.isAlive === false) {
+        // Did not respond to previous ping within the interval
         this.wsClients.delete(ws);
         try { ws.terminate(); } catch { /* ignore */ }
         continue;
       }
       ws.isAlive = false;
       try { ws.ping(); } catch { /* ignore */ }
+      // 10s pong timeout — terminate if no pong received
+      const pongTimer = setTimeout(() => {
+        if (ws.isAlive === false) {
+          this.wsClients.delete(ws);
+          try { ws.terminate(); } catch { /* ignore */ }
+        }
+      }, WS_PONG_TIMEOUT);
+      // Don't let the timer keep the process alive
+      if (pongTimer.unref) pongTimer.unref();
     }
   }
 
@@ -816,8 +826,13 @@ class ApiServer extends EventEmitter {
       saveSettingsFn(body, "api");
       this._sendJson(res, 200, { ok: true, data: body });
 
-      // If apiPort changed, schedule restart
-      if ("apiPort" in body) {
+      // Handle API server lifecycle changes after response is sent
+      if ("apiEnabled" in body && body.apiEnabled === false) {
+        // Shut down after responding
+        setImmediate(() => this.stop().catch((err) => {
+          console.error("[wotch] API stop failed:", err.message);
+        }));
+      } else if ("apiPort" in body) {
         setImmediate(() => this.restart().catch((err) => {
           console.error("[wotch] API restart failed:", err.message);
         }));
@@ -900,15 +915,21 @@ class ApiServer extends EventEmitter {
     return new Promise((resolve, reject) => {
       let attempt = 0;
       const tryPort = (port) => {
-        this.server.once("error", (err) => {
+        const onError = (err) => {
           if (err.code === "EADDRINUSE" && attempt < MAX_PORT_ATTEMPTS) {
             attempt++;
             tryPort(port + 1);
           } else {
             reject(err);
           }
-        });
+        };
+        this.server.once("error", onError);
         this.server.listen(port, "127.0.0.1", () => {
+          // Remove the startup error handler and add a runtime one
+          this.server.removeListener("error", onError);
+          this.server.on("error", (err) => {
+            console.error("[wotch] API server error:", err.message);
+          });
           this.port = port;
           resolve();
         });

@@ -1062,15 +1062,20 @@ const integrationManager = new ClaudeIntegrationManager({
   autoRegisterMCP: settings.integrationAutoRegisterMCP,
 });
 
-// Wire the enhanced detector's status-changed events to the renderer broadcast
+// Wire the enhanced detector's status-changed events to renderer + API broadcast
 integrationManager.on("status-changed", (tabId, status) => {
+  const aggregate = integrationManager.getAggregateStatus();
+  const perTab = {};
+  for (const [tid] of integrationManager.statusDetector.tabs) {
+    perTab[tid] = integrationManager.getStatus(tid);
+  }
+  // Renderer broadcast
   if (mainWindow && !mainWindow.isDestroyed()) {
-    const aggregate = integrationManager.getAggregateStatus();
-    const perTab = {};
-    for (const [tid] of integrationManager.statusDetector.tabs) {
-      perTab[tid] = integrationManager.getStatus(tid);
-    }
     mainWindow.webContents.send("claude-status", { aggregate, perTab });
+  }
+  // API WebSocket broadcast
+  if (apiServer && apiServer.running) {
+    apiServer.broadcastEvent("claude:status", { aggregate, tabs: perTab });
   }
 });
 
@@ -1119,10 +1124,22 @@ function createApiServer() {
       if (s && s.stream) s.stream.write(data);
     },
     detectProjects,
-    gitCheckpoint,
-    gitGetStatus,
-    gitListCheckpoints,
-    gitDiff: gitDiffForApi,
+    gitCheckpoint: (projectPath, message) => {
+      if (!isKnownProjectPath(projectPath)) return { success: false, message: "Unknown project path" };
+      return gitCheckpoint(projectPath, message);
+    },
+    gitGetStatus: (projectPath) => {
+      if (!isKnownProjectPath(projectPath)) return null;
+      return gitGetStatus(projectPath);
+    },
+    gitListCheckpoints: (projectPath, limit) => {
+      if (!isKnownProjectPath(projectPath)) return { projectPath, checkpoints: [], totalCount: 0 };
+      return gitListCheckpoints(projectPath, limit);
+    },
+    gitDiff: (projectPath, mode) => {
+      if (!isKnownProjectPath(projectPath)) return "Unknown project path";
+      return gitDiffForApi(projectPath, mode);
+    },
     loadSettings: () => ({ ...settings }),
     saveSettingsFn: (newSettings, source) => {
       const prev = { ...settings };
@@ -1176,18 +1193,6 @@ function createApiServer() {
     }),
   });
 }
-
-// Wire integration manager status changes to API WebSocket
-integrationManager.on("status-changed", (tabId, status) => {
-  if (apiServer && apiServer.running) {
-    const aggregate = integrationManager.getAggregateStatus();
-    const tabs = {};
-    for (const [tid] of integrationManager.statusDetector.tabs) {
-      tabs[tid] = integrationManager.getStatus(tid);
-    }
-    apiServer.broadcastEvent("claude:status", { aggregate, tabs });
-  }
-});
 
 // Also detect idle timeout — if no output for 5s while in thinking/working, might be done
 const idleCheckInterval = setInterval(() => {
