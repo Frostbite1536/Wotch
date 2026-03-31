@@ -2,7 +2,7 @@
 
 ## Overview
 
-Agents interact with the system through a curated set of 18 built-in tools organized into 6 categories. Each tool is registered in the `ToolRegistry` and exposed to the Anthropic API as a tool definition with a JSON Schema for input validation.
+Agents interact with the system through a curated set of 19 built-in tools organized into 7 categories. Each tool is registered in the `ToolRegistry` and exposed to the Anthropic API as a tool definition with a JSON Schema for input validation.
 
 Tools are the only way agents can affect the system. All tool executions go through the `TrustManager` for approval checks and are recorded in the audit log.
 
@@ -16,6 +16,7 @@ Tools are the only way agents can affect the system. All tool executions go thro
 | Terminal | 2 | Observe terminal output, detect patterns |
 | Project | 2 | List projects, get project info |
 | Wotch | 2 | Get Claude status, show notifications |
+| Agent | 1 | Spawn sub-agents for task delegation |
 
 ---
 
@@ -1088,3 +1089,58 @@ class ToolRegistry {
 | Project.getInfo | `safe` |
 | Wotch.getStatus | `safe` |
 | Wotch.showNotification | `safe` |
+| Agent.spawn | `write` |
+
+---
+
+## Category: Agent
+
+### Agent.spawn
+
+Spawn a sub-agent to handle a subtask. Enables tree-structured task delegation where a parent agent can divide work among specialized child agents.
+
+**Input Schema:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "agentId": {
+      "type": "string",
+      "description": "ID of the agent to spawn (must be a registered agent)."
+    },
+    "task": {
+      "type": "string",
+      "description": "Task description for the sub-agent."
+    }
+  },
+  "required": ["agentId", "task"]
+}
+```
+
+**Output Schema:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "runId": { "type": "string", "description": "Run ID of the spawned sub-agent" },
+    "agentId": { "type": "string" },
+    "status": { "type": "string", "enum": ["started"] }
+  }
+}
+```
+
+**Permission Requirements:**
+- Requires approval in `suggest-only` and `ask-first` modes.
+- Auto-approved in `auto-execute` mode.
+
+**Validation Rules:**
+- `agentId` must reference a registered agent.
+- Current depth must be less than `MAX_AGENT_DEPTH` (3).
+- Global `maxConcurrentAgents` limit must not be exceeded.
+- Sub-agent inherits the parent's project context but gets its own conversation loop.
+
+**Implementation Notes:**
+- The parent agent's `context._agentDepth` is incremented and passed to the child.
+- The parent's `runId` is passed as `_parentRunId` to establish the hierarchy.
+- Stopping a parent agent cascades to all children via `AgentRuntime.stop()` iterating `childRunIds`.
+- The agent tree is available via the `agent-tree` IPC channel for UI visualization.

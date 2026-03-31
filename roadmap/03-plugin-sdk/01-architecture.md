@@ -57,7 +57,7 @@ The plugin system spans both the Electron main process and the renderer process,
 |  |  +------------------+  +------------------+                  | |
 |  |  | SettingsRegistry |  | EventBus         |                  | |
 |  |  | - plugin configs |  | - pub/sub        |                  | |
-|  |  | - UI generation  |  | - cross-plugin   |                  | |
+|  |  | - UI generation  |  | - internal       |                  | |
 |  |  +------------------+  +------------------+                  | |
 |  +-------------------------------------------------------------+ |
 |                                                                   |
@@ -322,22 +322,34 @@ Existing channels (unchanged):
   set-pinned, get-pinned, pin-state
   expansion-state, claude-status
   ssh-connect, ssh-credential-*, ssh-host-verify-*
+  ssh-save-profile, ssh-delete-profile, ssh-list-profiles, ssh-browse-key
   resize-window, position-changed
   get-platform-info, get-displays
   update-available, update-downloaded
+  integration-status, integration-configure-hooks, integration-register-mcp
+  api-get-info, api-copy-token, api-regenerate-token
+  claude-set-api-key, claude-validate-key, claude-has-key, claude-delete-key
+  claude-get-models, claude-send-message, claude-stop-stream
+  claude-stream-chunk, claude-stream-end, claude-stream-error
+  claude-get-context, claude-get-conversations, claude-load-conversation
+  claude-delete-conversation, claude-new-conversation
+  claude-get-usage, claude-set-budget, claude-budget-alert
+  terminal-buffer-read, terminal-buffer-response
 
 New channels (plugin system):
   plugin-list              // Get list of discovered plugins
   plugin-enable            // Enable a plugin
   plugin-disable           // Disable a plugin
+  plugin-execute-command   // Execute a plugin command
+  plugin-get-settings      // Get a plugin's settings
+  plugin-save-setting      // Save a plugin setting
   plugin-get-permissions   // Get plugin's permission state
   plugin-grant-permission  // User grants a permission
   plugin-revoke-permission // User revokes a permission
-  plugin-activate-renderer // Main -> Renderer: load plugin renderer code
-  plugin-deactivate-renderer // Main -> Renderer: unload plugin renderer code
-  plugin-renderer-call     // Renderer -> Main: plugin API call from renderer
-  plugin-renderer-event    // Main -> Renderer: event for a plugin's renderer
-  plugin-renderer-result   // Main -> Renderer: result of a renderer API call
+  plugin-command-registered   // Main -> Renderer: new command available
+  plugin-settings-registered  // Main -> Renderer: new settings available
+  plugin-panel-registered     // Main -> Renderer: new panel available
+  plugin-status-update        // Main -> Renderer: plugin status detector result
 ```
 
 ### IPC Flow for a Renderer Plugin API Call
@@ -396,34 +408,22 @@ If a plugin's `main.js` or `renderer.js` throws during loading, the PluginHost c
 If a plugin's event handler throws, the PluginHost catches it, logs it, and increments an error counter. After 10 errors in 60 seconds, the plugin is automatically deactivated with a notification to the user.
 
 ### Plugin timeout
-The `activate()` and `deactivate()` calls have a 10-second timeout. If exceeded, the plugin is forcibly disposed and marked as `error`.
+The `activate()` and `deactivate()` calls have a 5-second timeout. If exceeded, the plugin is forcibly disposed and marked as `error`.
 
 ### Renderer plugin crash
 If a plugin iframe becomes unresponsive (no heartbeat response in 5 seconds), the PluginBridge destroys and optionally recreates the iframe. The panel shows an error state.
 
 ## File Layout for Implementation
 
-New files to create:
+Following Wotch's convention of keeping logic in `src/main.js` (same pattern as ClaudeStatusDetector, ClaudeIntegrationManager, etc.), the plugin system is implemented directly in existing files:
 
 ```
-src/
-  plugin-host.js           // Main-process PluginHost class
-  plugin-discovery.js       // Directory scanning and watching
-  plugin-manifest.js        // ManifestValidator
-  plugin-registry.js        // Plugin state machine and registry
-  plugin-loader.js          // vm context creation and code loading
-  plugin-permissions.js     // PermissionManager
-  plugin-bridge.js          // Renderer-side PluginBridge (loaded in renderer.js)
-  plugin-api-main.js        // Main-process API factory
-  plugin-api-renderer.js    // Renderer API factory (runs in iframe bridge)
-```
-
-Existing files to modify:
-
-```
-src/main.js                // Import PluginHost, init on startup, add IPC handlers
-src/preload.js             // Add plugin-* IPC channel bindings
-src/renderer.js            // Import PluginBridge, init on startup, integrate commands/panels/settings
-src/index.html             // Add plugin panel container, plugin settings UI section
+src/main.js                // PluginHost class, discovery, manifest validation,
+                           // API factory, permission manager, IPC handlers,
+                           // terminal data routing, error boundaries
+src/preload.js             // Add plugin-* IPC channel bindings (~10 channels)
+src/renderer.js            // Plugin list rendering, command palette integration,
+                           // panel extension rendering, plugin settings UI
+src/index.html             // Plugin panel container, plugin settings UI section
 package.json               // No new dependencies needed (vm is built-in)
 ```

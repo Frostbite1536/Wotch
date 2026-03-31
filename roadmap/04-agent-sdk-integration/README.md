@@ -12,8 +12,10 @@ Agents are defined as declarative YAML/JSON files, loaded from `~/.wotch/agents/
 2. **Declarative Agent Definitions** — Let users author and share agents as simple YAML files with tools, triggers, system prompts, and approval modes.
 3. **Built-in Tools** — Expose Wotch's existing capabilities (PTY, git, file system, status detection) as Agent SDK tools with well-defined schemas.
 4. **Graduated Trust** — Three approval modes (`suggest-only`, `ask-first`, `auto-execute`) with per-agent configuration and dangerous-action detection.
-5. **Agent UI Panel** — A collapsible side panel in the renderer showing agent activity, streaming reasoning, tool calls, and action approval dialogs.
+5. **Agent UI Panel** — A collapsible side panel in the renderer showing agent activity, tool-specific rich rendering (diffs, search results, shell output), and action approval dialogs.
 6. **Built-in Agents** — Ship four useful agents out of the box: Error Fixer, Code Reviewer, Test Writer, Deploy Assistant.
+7. **Sub-Agent Spawning** — Agents can spawn child agents via the `Agent.spawn` tool, enabling multi-agent orchestration with depth limits and parent-child tracking.
+8. **Agent Tree Visualization** — A real-time tree view in the agent panel showing parent-child agent hierarchies, per-node status, and the ability to stop individual agents or entire subtrees.
 
 ## Scope
 
@@ -22,7 +24,7 @@ Agents are defined as declarative YAML/JSON files, loaded from `~/.wotch/agents/
 - `@anthropic-ai/sdk` dependency installation and main-process integration
 - Agent definition format specification and loader (YAML + JSON)
 - Agent runtime manager (start, stop, pause, emergency stop)
-- 18 built-in tools across 6 categories (Shell, FileSystem, Git, Terminal, Project, Wotch)
+- 19 built-in tools across 7 categories (Shell, FileSystem, Git, Terminal, Project, Wotch, Agent)
 - Trust/approval system with UI prompts and audit logging
 - Agent panel UI with streaming activity display
 - 4 built-in agent definitions
@@ -37,6 +39,7 @@ Agents are defined as declarative YAML/JSON files, loaded from `~/.wotch/agents/
 - Agent marketplace or distribution system
 - Fine-tuning or model training
 - Streaming audio or image tool outputs
+- Full swarm orchestration (sub-agent spawning supports tree-structured delegation, not arbitrary mesh topologies)
 
 ## Dependency: Plan 0 (Claude Code Deep Integration)
 

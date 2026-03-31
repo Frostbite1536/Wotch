@@ -153,6 +153,81 @@ contextBridge.exposeInMainWorld("wotch", {
     setBudget: (limit) => ipcRenderer.invoke("claude-set-budget", { limit }),
   },
 
+  // ── Plugin System ──────────────────────────────────────────────
+  pluginList: () => ipcRenderer.invoke("plugin-list"),
+  pluginEnable: (pluginId) => ipcRenderer.invoke("plugin-enable", { pluginId }),
+  pluginDisable: (pluginId) => ipcRenderer.invoke("plugin-disable", { pluginId }),
+  pluginExecuteCommand: (commandId) => ipcRenderer.invoke("plugin-execute-command", { commandId }),
+  pluginGetSettings: (pluginId) => ipcRenderer.invoke("plugin-get-settings", { pluginId }),
+  pluginSaveSetting: (pluginId, settingId, value) =>
+    ipcRenderer.invoke("plugin-save-setting", { pluginId, settingId, value }),
+  pluginGetPermissions: (pluginId) => ipcRenderer.invoke("plugin-get-permissions", { pluginId }),
+  pluginGrantPermission: (pluginId, permission) =>
+    ipcRenderer.invoke("plugin-grant-permission", { pluginId, permission }),
+  pluginRevokePermission: (pluginId, permission) =>
+    ipcRenderer.invoke("plugin-revoke-permission", { pluginId, permission }),
+  onPluginCommandRegistered: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-command-registered");
+    ipcRenderer.on("plugin-command-registered", (_e, data) => callback(data));
+  },
+  onPluginStatusUpdate: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-status-update");
+    ipcRenderer.on("plugin-status-update", (_e, data) => callback(data));
+  },
+  onPluginPanelRegistered: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-panel-registered");
+    ipcRenderer.on("plugin-panel-registered", (_e, data) => callback(data));
+  },
+  onPluginSettingsRegistered: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-settings-registered");
+    ipcRenderer.on("plugin-settings-registered", (_e, data) => callback(data));
+  },
+  onPluginNotification: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-notification");
+    ipcRenderer.on("plugin-notification", (_e, data) => callback(data));
+  },
+  onPluginThemeRegistered: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-theme-registered");
+    ipcRenderer.on("plugin-theme-registered", (_e, data) => callback(data));
+  },
+  onPluginPanelMessage: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-panel-message");
+    ipcRenderer.on("plugin-panel-message", (_e, data) => callback(data));
+  },
+  onPluginPanelVisible: (callback) => {
+    ipcRenderer.removeAllListeners("plugin-panel-visible");
+    ipcRenderer.on("plugin-panel-visible", (_e, data) => callback(data));
+  },
+
+  // ── Agent SDK ──────────────────────────────────────────────────
+  listAgents: () => ipcRenderer.invoke("agent-list"),
+  startAgent: (agentId, context) => ipcRenderer.invoke("agent-start", { agentId, context }),
+  stopAgent: (runId) => ipcRenderer.invoke("agent-stop", { runId }),
+  approveAction: (runId, actionId, decision) =>
+    ipcRenderer.invoke("agent-approve", { runId, actionId, decision }),
+  rejectAction: (runId, actionId, reason) =>
+    ipcRenderer.invoke("agent-reject", { runId, actionId, reason }),
+  getAgentRuns: () => ipcRenderer.invoke("agent-runs"),
+  getAgentTree: () => ipcRenderer.invoke("agent-tree"),
+  getAgentTrust: (agentId) => ipcRenderer.invoke("agent-get-trust", { agentId }),
+  setAgentTrust: (agentId, mode) => ipcRenderer.invoke("agent-set-trust", { agentId, mode }),
+  onAgentEvent: (callback) => {
+    ipcRenderer.removeAllListeners("agent-event");
+    ipcRenderer.on("agent-event", (_e, payload) => callback(payload));
+  },
+  onAgentApproval: (callback) => {
+    ipcRenderer.removeAllListeners("agent-approval-request");
+    ipcRenderer.on("agent-approval-request", (_e, payload) => callback(payload));
+  },
+  onAgentListChanged: (callback) => {
+    ipcRenderer.removeAllListeners("agent-list-changed");
+    ipcRenderer.on("agent-list-changed", (_e, payload) => callback(payload));
+  },
+  onAgentSuggestion: (callback) => {
+    ipcRenderer.removeAllListeners("agent-suggestion");
+    ipcRenderer.on("agent-suggestion", (_e, payload) => callback(payload));
+  },
+
   // Terminal buffer read (used by MCP server via main process)
   onTerminalBufferRead: (callback) => {
     ipcRenderer.removeAllListeners("terminal-buffer-read");

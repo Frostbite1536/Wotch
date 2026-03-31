@@ -712,6 +712,21 @@ document.addEventListener("keydown", (e) => {
     paletteOpen ? closePalette() : openPalette();
     return;
   }
+  // Ctrl+Shift+A — toggle agent panel
+  if (e.ctrlKey && e.shiftKey && e.key === "A") {
+    e.preventDefault();
+    agentPanelOpen ? closeAgentPanel() : openAgentPanel();
+    return;
+  }
+  // Ctrl+Shift+K — emergency stop all agents
+  if (e.ctrlKey && e.shiftKey && e.key === "K") {
+    e.preventDefault();
+    window.wotch.getAgentRuns().then(runs => {
+      for (const run of runs) window.wotch.stopAgent(run.runId);
+      if (runs.length) showToast("All agents stopped", "info");
+    }).catch(() => {});
+    return;
+  }
   // Ctrl+Shift+L — toggle chat (avoids Ctrl+Shift+C which is terminal copy on Linux)
   if (e.ctrlKey && e.shiftKey && e.key === "L") {
     e.preventDefault();
@@ -836,6 +851,7 @@ function openSettings() {
   settingsOverlay.classList.add("open");
   loadSettingsUI();
   refreshIntegrationStatus();
+  renderPluginList();
   integrationPollTimer = setInterval(refreshIntegrationStatus, 5000);
 }
 
@@ -1872,7 +1888,8 @@ const diffOverlay = document.getElementById("diff-overlay");
 const diffContent = document.getElementById("diff-content");
 
 function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  if (!str) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 async function showDiff(mode) {
@@ -2015,8 +2032,7 @@ function closePalette() {
 }
 
 function getFilteredCommands() {
-  const q = paletteInput.value.toLowerCase();
-  return q ? COMMANDS.filter((c) => c.name.toLowerCase().includes(q)) : COMMANDS;
+  return getFilteredCommandsWithPlugins();
 }
 
 function renderPalette() {
@@ -2046,6 +2062,524 @@ paletteList.addEventListener("click", (e) => {
     if (cmd) { closePalette(); cmd.action(); }
   }
 });
+
+// ── Plugin System (renderer) ────────────────────────────────────
+let pluginCommands = []; // [{ id, title, pluginId }]
+let pluginPanels = new Map(); // panelId → { pluginId, title, html, icon, location, iframe }
+
+async function renderPluginList() {
+  const container = document.getElementById("plugin-list-container");
+  if (!container) return;
+  try {
+    const plugins = await window.wotch.pluginList();
+    if (!plugins || plugins.length === 0) {
+      container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">No plugins installed</div>';
+      return;
+    }
+    container.innerHTML = plugins.map(p => `
+      <div class="setting-row" style="align-items:flex-start;">
+        <div style="flex:1;min-width:0;">
+          <div class="setting-label">${escapeHtml(p.displayName)} <span style="font-size:10px;color:var(--text-muted);">v${escapeHtml(p.version)}</span></div>
+          <div class="setting-hint">${escapeHtml(p.description)}</div>
+          ${p.state === "error" ? `<div style="font-size:10px;color:#f87171;margin-top:2px;">${escapeHtml(p.errors.join(", "))}</div>` : ""}
+          ${p.permissions.length > 0 ? `<div style="font-size:9px;color:var(--text-muted);margin-top:2px;">Permissions: ${p.permissions.map(perm =>
+            `<span style="color:${p.grantedPermissions[perm] === "granted" ? "var(--green)" : "var(--text-muted)"}">${escapeHtml(perm)}</span>`
+          ).join(", ")}</div>` : ""}
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <div class="setting-toggle ${p.enabled ? "on" : ""}" data-plugin-toggle="${escapeHtml(p.id)}" title="${p.enabled ? "Disable" : "Enable"}">
+            <div class="setting-toggle-knob"></div>
+          </div>
+        </div>
+      </div>
+    `).join("");
+
+    // Bind toggle handlers
+    container.querySelectorAll("[data-plugin-toggle]").forEach(toggle => {
+      toggle.addEventListener("click", async () => {
+        const pluginId = toggle.dataset.pluginToggle;
+        const isOn = toggle.classList.contains("on");
+        if (isOn) {
+          await window.wotch.pluginDisable(pluginId);
+        } else {
+          // Grant all requested permissions on first enable
+          const perms = await window.wotch.pluginGetPermissions(pluginId);
+          for (const perm of perms.requested) {
+            if (perms.granted[perm] !== "granted") {
+              await window.wotch.pluginGrantPermission(pluginId, perm);
+            }
+          }
+          await window.wotch.pluginEnable(pluginId);
+        }
+        await renderPluginList();
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<div style="font-size:11px;color:#f87171;">Failed to load plugins: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// escapeHtml is already defined above (near diff rendering)
+
+function getFilteredCommandsWithPlugins() {
+  const q = paletteInput.value.toLowerCase();
+  const all = [
+    ...COMMANDS,
+    ...pluginCommands.map(pc => ({
+      name: pc.title,
+      shortcut: "",
+      action: () => window.wotch.pluginExecuteCommand(pc.id).catch(err => showToast(`Plugin command failed: ${err.message}`, "error")),
+    })),
+  ];
+  return q ? all.filter((c) => c.name.toLowerCase().includes(q)) : all;
+}
+
+function renderPluginPanel(panel) {
+  const container = document.getElementById("plugin-panel-container");
+  if (!container) return;
+
+  let entry = pluginPanels.get(panel.id);
+  if (entry && entry.iframe) {
+    // Update existing iframe
+    entry.iframe.srcdoc = panel.html;
+    entry.title = panel.title;
+    entry.html = panel.html;
+    return;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.id = `plugin-panel-${panel.id}`;
+  wrapper.style.cssText = "border-top:1px solid var(--border);padding:0;";
+
+  const header = document.createElement("div");
+  header.style.cssText = "padding:6px 10px;font-size:11px;color:var(--text-dim);font-weight:600;display:flex;align-items:center;gap:4px;";
+  header.textContent = `${panel.icon || "🔌"} ${panel.title}`;
+  wrapper.appendChild(header);
+
+  const iframe = document.createElement("iframe");
+  iframe.sandbox = "allow-scripts";
+  iframe.srcdoc = panel.html;
+  iframe.style.cssText = "width:100%;height:200px;border:none;background:transparent;";
+  wrapper.appendChild(iframe);
+
+  container.appendChild(wrapper);
+  container.style.display = "";
+
+  pluginPanels.set(panel.id, { ...panel, iframe, wrapper });
+}
+
+function initPluginListeners() {
+  // Plugin commands dynamically added to palette
+  window.wotch.onPluginCommandRegistered?.((data) => {
+    if (!pluginCommands.find(c => c.id === data.id)) {
+      pluginCommands.push({ id: data.id, title: data.title, pluginId: data.pluginId });
+    }
+  });
+
+  // Plugin panels
+  window.wotch.onPluginPanelRegistered?.((data) => {
+    renderPluginPanel(data);
+  });
+
+  // Plugin notifications
+  window.wotch.onPluginNotification?.((data) => {
+    showToast(data.message, data.type || "info");
+  });
+
+  // Plugin themes
+  window.wotch.onPluginThemeRegistered?.((data) => {
+    if (!THEMES[data.id]) {
+      THEMES[data.id] = data.colors;
+    }
+  });
+
+  // Plugin status updates
+  window.wotch.onPluginStatusUpdate?.((data) => {
+    // Plugin list refreshed, re-render if settings open
+    if (settingsOpen && Array.isArray(data)) {
+      renderPluginList();
+    }
+  });
+}
+
+// ── Agent SDK (renderer) ────────────────────────────────────────
+let agentPanelOpen = false;
+let currentAgentRunId = null;
+let pendingApproval = null; // { runId, actionId }
+
+const agentOverlay = document.getElementById("agent-overlay");
+const agentSelector = document.getElementById("agent-selector");
+const agentTaskInput = document.getElementById("agent-task-input");
+const agentActivity = document.getElementById("agent-activity");
+const btnAgentRun = document.getElementById("btn-agent-run");
+const btnAgentStop = document.getElementById("btn-agent-stop");
+const btnAgentClose = document.getElementById("btn-agent-close");
+const agentApprovalOverlay = document.getElementById("agent-approval-overlay");
+const agentApprovalTool = document.getElementById("agent-approval-tool");
+const agentApprovalInput = document.getElementById("agent-approval-input");
+
+function openAgentPanel() {
+  agentPanelOpen = true;
+  if (agentOverlay) agentOverlay.style.display = "";
+  loadAgentList();
+  renderAgentTree();
+}
+
+function closeAgentPanel() {
+  agentPanelOpen = false;
+  if (agentOverlay) agentOverlay.style.display = "none";
+}
+
+async function loadAgentList() {
+  try {
+    const agents = await window.wotch.listAgents();
+    if (agentSelector) {
+      agentSelector.innerHTML = agents.map(a =>
+        `<option value="${escapeHtml(a.id)}">${escapeHtml(a.displayName)} (${escapeHtml(a.approvalMode)})</option>`
+      ).join("");
+      if (agents.length === 0) {
+        agentSelector.innerHTML = '<option value="">No agents available</option>';
+      }
+    }
+  } catch (err) {
+    if (agentSelector) agentSelector.innerHTML = `<option value="">Error: ${escapeHtml(err.message)}</option>`;
+  }
+}
+
+async function runAgent() {
+  const agentId = agentSelector?.value;
+  const task = agentTaskInput?.value?.trim();
+  if (!agentId || !task) { showToast("Select an agent and enter a task", "error"); return; }
+
+  try {
+    if (agentActivity) agentActivity.innerHTML = '<div style="color:var(--accent);">Starting agent...</div>';
+    if (btnAgentRun) btnAgentRun.style.display = "none";
+    if (btnAgentStop) btnAgentStop.style.display = "";
+
+    const result = await window.wotch.startAgent(agentId, { task, projectPath: currentProject?.path });
+    currentAgentRunId = result.runId;
+  } catch (err) {
+    showToast(`Agent failed: ${err.message}`, "error");
+    if (btnAgentRun) btnAgentRun.style.display = "";
+    if (btnAgentStop) btnAgentStop.style.display = "none";
+  }
+}
+
+async function stopAgent() {
+  if (currentAgentRunId) {
+    await window.wotch.stopAgent(currentAgentRunId);
+    currentAgentRunId = null;
+  }
+  if (btnAgentRun) btnAgentRun.style.display = "";
+  if (btnAgentStop) btnAgentStop.style.display = "none";
+}
+
+function appendAgentActivity(html) {
+  if (!agentActivity) return;
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  div.style.cssText = "margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border);";
+  agentActivity.appendChild(div);
+  agentActivity.scrollTop = agentActivity.scrollHeight;
+}
+
+// ── Tool-specific UI rendering ────────────────────────
+function renderToolCallRich(tool, input) {
+  const shortPath = (p) => p ? escapeHtml(p.split(/[/\\]/).pop()) : "";
+  switch (tool) {
+    case "FileSystem.readFile":
+    case "Read":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:11px;">&#128196;</span><span style="color:var(--accent);font-size:11px;">Reading</span><code style="font-size:10px;color:var(--text);background:var(--accent-dim);padding:1px 5px;border-radius:3px;">${shortPath(input.path || input.file_path)}</code></div>`;
+    case "FileSystem.writeFile":
+    case "Write":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--green);font-size:11px;">&#9998;</span><span style="color:var(--green);font-size:11px;">Writing</span><code style="font-size:10px;color:var(--text);background:var(--accent-dim);padding:1px 5px;border-radius:3px;">${shortPath(input.path || input.file_path)}</code><span style="font-size:9px;color:var(--text-muted);">${input.content ? (input.content.length > 1000 ? Math.round(input.content.length / 1024) + "KB" : input.content.length + "B") : ""}</span></div>`;
+    case "Edit":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#facc15;font-size:11px;">&#9998;</span><span style="color:#facc15;font-size:11px;">Editing</span><code style="font-size:10px;color:var(--text);background:var(--accent-dim);padding:1px 5px;border-radius:3px;">${shortPath(input.file_path || input.path)}</code></div>`;
+    case "FileSystem.deleteFile":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#f87171;font-size:11px;">&#128465;</span><span style="color:#f87171;font-size:11px;">Deleting</span><code style="font-size:10px;color:var(--text);background:rgba(248,113,113,0.15);padding:1px 5px;border-radius:3px;">${shortPath(input.path)}</code></div>`;
+    case "FileSystem.searchFiles":
+    case "Grep":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:11px;">&#128269;</span><span style="color:var(--accent);font-size:11px;">Searching</span><code style="font-size:10px;color:var(--text);background:var(--accent-dim);padding:1px 5px;border-radius:3px;">${escapeHtml(input.pattern || input.query || "")}</code>${input.path ? `<span style="font-size:9px;color:var(--text-muted);">in ${shortPath(input.path)}</span>` : ""}</div>`;
+    case "FileSystem.listFiles":
+    case "Glob":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:11px;">&#128193;</span><span style="color:var(--accent);font-size:11px;">Listing</span><code style="font-size:10px;color:var(--text);background:var(--accent-dim);padding:1px 5px;border-radius:3px;">${shortPath(input.path || input.pattern || ".")}</code></div>`;
+    case "Shell.execute":
+    case "Bash":
+      return `<div><div style="display:flex;align-items:center;gap:6px;"><span style="color:#a78bfa;font-size:11px;">&#9654;</span><span style="color:#a78bfa;font-size:11px;">Shell</span></div><pre style="font-size:10px;color:var(--text);background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;margin:4px 0 0;overflow-x:auto;white-space:pre-wrap;max-height:60px;">${escapeHtml((input.command || "").slice(0, 500))}</pre></div>`;
+    case "Git.status":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#fb923c;font-size:11px;">&#9878;</span><span style="color:#fb923c;font-size:11px;">Git status</span></div>`;
+    case "Git.diff":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#fb923c;font-size:11px;">&#9878;</span><span style="color:#fb923c;font-size:11px;">Git diff</span><span style="font-size:9px;color:var(--text-muted);">${escapeHtml(input.mode || "all")}</span></div>`;
+    case "Git.log":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#fb923c;font-size:11px;">&#9878;</span><span style="color:#fb923c;font-size:11px;">Git log</span><span style="font-size:9px;color:var(--text-muted);">${input.count || 10} commits</span></div>`;
+    case "Git.checkpoint":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--green);font-size:11px;">&#10003;</span><span style="color:var(--green);font-size:11px;">Checkpoint</span><span style="font-size:9px;color:var(--text-muted);">${escapeHtml(input.message || "")}</span></div>`;
+    case "Git.branchInfo":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#fb923c;font-size:11px;">&#9878;</span><span style="color:#fb923c;font-size:11px;">Branch info</span></div>`;
+    case "Terminal.readBuffer":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--text-dim);font-size:11px;">&#9617;</span><span style="color:var(--text-dim);font-size:11px;">Reading terminal</span><span style="font-size:9px;color:var(--text-muted);">${input.lines || 200} lines</span></div>`;
+    case "Agent.spawn":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:#60a5fa;font-size:11px;">&#9881;</span><span style="color:#60a5fa;font-size:11px;">Spawning agent</span><code style="font-size:10px;color:var(--text);background:rgba(96,165,250,0.15);padding:1px 5px;border-radius:3px;">${escapeHtml(input.agentId || "")}</code></div>`;
+    case "Wotch.showNotification":
+      return `<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:11px;">&#128276;</span><span style="color:var(--accent);font-size:11px;">Notification</span><span style="font-size:10px;color:var(--text-muted);">${escapeHtml((input.message || "").slice(0, 80))}</span></div>`;
+    default:
+      return `<span style="color:var(--accent);font-size:11px;">Tool: ${escapeHtml(tool)}</span> <span style="color:var(--text-muted);font-size:10px;">${escapeHtml(JSON.stringify(input).slice(0, 100))}</span>`;
+  }
+}
+
+function renderToolResultRich(tool, output, durationMs) {
+  const dur = `<span style="font-size:9px;color:var(--text-muted);margin-left:auto;">${durationMs}ms</span>`;
+  let parsed = null;
+  try { parsed = typeof output === "string" ? JSON.parse(output) : output; } catch { /* not JSON */ }
+
+  switch (tool) {
+    case "FileSystem.readFile":
+    case "Read": {
+      const content = parsed?.content || (typeof output === "string" ? output : "");
+      const lines = content.split("\n");
+      const lineCount = lines.length;
+      const preview = lines.slice(0, 8).join("\n");
+      return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;color:var(--text-muted);">Read ${lineCount} lines ${dur}</div><pre style="color:var(--text-dim);background:rgba(0,0,0,0.2);padding:4px 6px;border-radius:3px;margin:3px 0 0;overflow-x:auto;white-space:pre-wrap;max-height:80px;font-size:9px;">${escapeHtml(preview)}${lineCount > 8 ? "\n..." : ""}</pre></div>`;
+    }
+    case "FileSystem.writeFile":
+    case "Write":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--green);">&#10003; Written${parsed?.path ? ` to ${escapeHtml(parsed.path.split(/[/\\]/).pop())}` : ""} ${dur}</div>`;
+    case "Edit": {
+      const content = parsed?.content || (typeof output === "string" ? output : "");
+      if (content.includes("+++") || content.includes("---") || content.includes("@@")) {
+        const diffLines = content.split("\n").slice(0, 12);
+        const diffHtml = diffLines.map((line) => {
+          if (line.startsWith("+") && !line.startsWith("+++")) return `<span class="diff-add">${escapeHtml(line)}</span>`;
+          if (line.startsWith("-") && !line.startsWith("---")) return `<span class="diff-del">${escapeHtml(line)}</span>`;
+          if (line.startsWith("@@")) return `<span class="diff-hunk">${escapeHtml(line)}</span>`;
+          return escapeHtml(line);
+        }).join("\n");
+        return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;color:#facc15;">Edit applied ${dur}</div><pre style="background:rgba(0,0,0,0.2);padding:4px 6px;border-radius:3px;margin:3px 0 0;overflow-x:auto;white-space:pre-wrap;max-height:100px;font-size:9px;">${diffHtml}${diffLines.length < content.split("\n").length ? "\n..." : ""}</pre></div>`;
+      }
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:#facc15;">Edit applied ${dur}</div>`;
+    }
+    case "FileSystem.deleteFile":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:#f87171;">&#128465; Deleted ${dur}</div>`;
+    case "FileSystem.searchFiles":
+    case "Grep": {
+      const files = parsed?.files || [];
+      if (files.length === 0) return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">No matches ${dur}</div>`;
+      const shown = files.slice(0, 6);
+      return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;color:var(--accent);">${files.length} file${files.length !== 1 ? "s" : ""} matched ${dur}</div><div style="color:var(--text-dim);font-size:9px;margin-top:2px;">${shown.map(f => `<div style="padding:1px 0;">&#8226; ${escapeHtml(typeof f === "string" ? f.split(/[/\\]/).pop() : f)}</div>`).join("")}${files.length > 6 ? `<div style="color:var(--text-muted);">...and ${files.length - 6} more</div>` : ""}</div></div>`;
+    }
+    case "FileSystem.listFiles":
+    case "Glob": {
+      const files = parsed?.files || [];
+      if (files.length === 0) return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Empty directory ${dur}</div>`;
+      const dirs = files.filter(f => f.isDirectory);
+      const regular = files.filter(f => !f.isDirectory);
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--accent);">${dirs.length} dir${dirs.length !== 1 ? "s" : ""}, ${regular.length} file${regular.length !== 1 ? "s" : ""} ${dur}</div>`;
+    }
+    case "Shell.execute":
+    case "Bash": {
+      const exitCode = parsed?.exitCode ?? null;
+      const stdout = parsed?.stdout || (typeof output === "string" ? output : "");
+      const lines = stdout.split("\n");
+      const preview = lines.slice(0, 10).join("\n");
+      const codeColor = exitCode === 0 ? "var(--green)" : exitCode !== null ? "#f87171" : "var(--text-muted)";
+      return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;"><span style="color:${codeColor};">${exitCode === 0 ? "&#10003;" : exitCode !== null ? "&#10007;" : "&#8943;"} exit ${exitCode ?? "?"}</span>${parsed?.timedOut ? '<span style="color:#f87171;">timed out</span>' : ""} ${dur}</div>${preview.trim() ? `<pre style="color:var(--text-dim);background:rgba(0,0,0,0.3);padding:4px 6px;border-radius:3px;margin:3px 0 0;overflow-x:auto;white-space:pre-wrap;max-height:80px;font-size:9px;">${escapeHtml(preview.slice(0, 1000))}${lines.length > 10 ? "\n..." : ""}</pre>` : ""}</div>`;
+    }
+    case "Git.status": {
+      if (!parsed) return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Status ${dur}</div>`;
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:#fb923c;">&#9878; ${escapeHtml(parsed.branch || "?")} &middot; ${parsed.changedFiles || 0} changed ${dur}</div>`;
+    }
+    case "Git.diff": {
+      const diff = parsed?.diff || (typeof output === "string" ? output : "");
+      if (!diff.trim()) return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">No changes ${dur}</div>`;
+      const diffLines = diff.split("\n").slice(0, 15);
+      const addCount = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+      const delCount = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+      const diffHtml = diffLines.map((line) => {
+        if (line.startsWith("+") && !line.startsWith("+++")) return `<span class="diff-add">${escapeHtml(line)}</span>`;
+        if (line.startsWith("-") && !line.startsWith("---")) return `<span class="diff-del">${escapeHtml(line)}</span>`;
+        if (line.startsWith("@@")) return `<span class="diff-hunk">${escapeHtml(line)}</span>`;
+        if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) return `<span class="diff-meta">${escapeHtml(line)}</span>`;
+        return escapeHtml(line);
+      }).join("\n");
+      return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;color:#fb923c;"><span style="color:var(--green);">+${addCount}</span> <span style="color:#f87171;">-${delCount}</span> ${dur}</div><pre style="background:rgba(0,0,0,0.2);padding:4px 6px;border-radius:3px;margin:3px 0 0;overflow-x:auto;white-space:pre-wrap;max-height:120px;font-size:9px;">${diffHtml}${diff.split("\n").length > 15 ? "\n..." : ""}</pre></div>`;
+    }
+    case "Git.log": {
+      const commits = parsed?.commits || [];
+      if (commits.length === 0) return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">No commits ${dur}</div>`;
+      const shown = commits.slice(0, 5);
+      return `<div style="font-size:10px;"><div style="display:flex;align-items:center;gap:6px;color:#fb923c;">${commits.length} commit${commits.length !== 1 ? "s" : ""} ${dur}</div><div style="font-size:9px;margin-top:2px;">${shown.map(c => `<div style="padding:1px 0;color:var(--text-dim);"><code style="color:#fb923c;font-size:8px;">${escapeHtml((c.hash || "").slice(0, 7))}</code> ${escapeHtml(c.message || "")}</div>`).join("")}${commits.length > 5 ? `<div style="color:var(--text-muted);">...and ${commits.length - 5} more</div>` : ""}</div></div>`;
+    }
+    case "Git.checkpoint":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--green);">&#10003; Checkpoint created ${dur}</div>`;
+    case "Git.branchInfo":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:#fb923c;">&#9878; ${escapeHtml(parsed?.branch || output || "")} ${dur}</div>`;
+    case "Agent.spawn":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:#60a5fa;">&#9881; Sub-agent started: ${escapeHtml(parsed?.runId || "")} ${dur}</div>`;
+    case "Wotch.showNotification":
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--accent);">&#128276; Sent ${dur}</div>`;
+    default:
+      return `<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text-dim);">Result (${durationMs}ms): ${escapeHtml((typeof output === "string" ? output : JSON.stringify(output) || "").slice(0, 200))}</div>`;
+  }
+}
+
+// ── Agent tree visualization ──────────────────────────
+const agentTreeContainer = document.getElementById("agent-tree");
+const agentTreeContent = document.getElementById("agent-tree-content");
+
+async function renderAgentTree() {
+  if (!window.wotch.getAgentTree) return;
+  try {
+    const tree = await window.wotch.getAgentTree();
+    if (!tree || tree.length === 0) {
+      if (agentTreeContainer) agentTreeContainer.style.display = "none";
+      return;
+    }
+    if (agentTreeContainer) agentTreeContainer.style.display = "";
+    if (agentTreeContent) agentTreeContent.innerHTML = tree.map(node => renderTreeNode(node, 0)).join("");
+  } catch { /* ignore */ }
+}
+
+function renderTreeNode(node, indent) {
+  const stateColors = {
+    running: "var(--accent)", "waiting-approval": "#facc15",
+    completed: "var(--green)", failed: "#f87171", stopped: "var(--text-muted)", idle: "var(--text-dim)",
+  };
+  const stateIcons = {
+    running: "&#9654;", "waiting-approval": "&#9208;",
+    completed: "&#10003;", failed: "&#10007;", stopped: "&#9632;", idle: "&#9675;",
+  };
+  const color = stateColors[node.state] || "var(--text-dim)";
+  const icon = stateIcons[node.state] || "&#9675;";
+  const pad = indent * 20;
+  const connector = indent > 0 ? `<span style="color:var(--border);margin-right:4px;">${indent > 1 ? "&#9474; ".repeat(indent - 1) : ""}&#9492;&#9472;</span>` : "";
+  const progress = node.state === "running" ? ` <span style="font-size:9px;color:var(--text-muted);">(${node.iteration}/${node.maxTurns})</span>` : "";
+
+  let html = `<div style="padding:3px 0 3px ${pad}px;display:flex;align-items:center;gap:4px;">`;
+  html += connector;
+  html += `<span style="color:${color};font-size:10px;">${icon}</span>`;
+  html += `<span style="color:var(--text);font-size:11px;font-weight:500;">${escapeHtml(node.agentName)}</span>`;
+  html += `<span style="color:${color};font-size:9px;">${escapeHtml(node.state)}</span>`;
+  html += progress;
+  if (node.state === "running" || node.state === "waiting-approval") {
+    html += `<button class="settings-reset-btn agent-tree-stop" data-run-id="${escapeHtml(node.runId)}" style="font-size:9px;padding:1px 6px;color:#f87171;margin-left:auto;">Stop</button>`;
+  }
+  html += `</div>`;
+
+  if (node.children && node.children.length > 0) {
+    html += node.children.map(child => renderTreeNode(child, indent + 1)).join("");
+  }
+  return html;
+}
+
+function showApprovalDialog(data) {
+  pendingApproval = { runId: data.runId, actionId: data.actionId };
+  if (agentApprovalTool) agentApprovalTool.textContent = data.tool;
+  if (agentApprovalInput) agentApprovalInput.textContent = JSON.stringify(data.input, null, 2);
+  if (agentApprovalOverlay) agentApprovalOverlay.style.display = "flex";
+}
+
+function hideApprovalDialog() {
+  pendingApproval = null;
+  if (agentApprovalOverlay) agentApprovalOverlay.style.display = "none";
+}
+
+function initAgentListeners() {
+  // Agent events
+  window.wotch.onAgentEvent?.((event) => {
+    switch (event.type) {
+      case "started":
+        appendAgentActivity(`<span style="color:var(--green);">Agent started: ${escapeHtml(event.data.agentName)}${event.depth > 0 ? ` (depth ${event.depth})` : ""}</span>`);
+        renderAgentTree();
+        break;
+      case "reasoning":
+        appendAgentActivity(`<span style="color:var(--text-dim);">${escapeHtml(event.data.text)}</span>`);
+        break;
+      case "tool-call":
+        appendAgentActivity(renderToolCallRich(event.data.tool, event.data.input || {}));
+        break;
+      case "tool-result":
+        appendAgentActivity(renderToolResultRich(event.data.tool, event.data.output || "", event.data.durationMs));
+        break;
+      case "error":
+        appendAgentActivity(`<span style="color:#f87171;">Error: ${escapeHtml(event.data.message)}</span>`);
+        break;
+      case "completed":
+        appendAgentActivity(`<span style="color:var(--green);">Completed (${event.data.turnsUsed} turns)</span>`);
+        if (!event.parentRunId) {
+          if (btnAgentRun) btnAgentRun.style.display = "";
+          if (btnAgentStop) btnAgentStop.style.display = "none";
+          currentAgentRunId = null;
+        }
+        renderAgentTree();
+        break;
+      case "stopped":
+        appendAgentActivity(`<span style="color:var(--text-muted);">Stopped: ${escapeHtml(event.data.reason)}</span>`);
+        if (!event.parentRunId) {
+          if (btnAgentRun) btnAgentRun.style.display = "";
+          if (btnAgentStop) btnAgentStop.style.display = "none";
+          currentAgentRunId = null;
+        }
+        renderAgentTree();
+        break;
+    }
+  });
+
+  // Approval requests
+  window.wotch.onAgentApproval?.((data) => {
+    showApprovalDialog(data);
+  });
+
+  // Agent suggestions
+  window.wotch.onAgentSuggestion?.((data) => {
+    showToast(`${data.agentName} can help: ${data.trigger}`, "info");
+  });
+
+  // Bind UI buttons
+  if (btnAgentRun) btnAgentRun.addEventListener("click", runAgent);
+  if (btnAgentStop) btnAgentStop.addEventListener("click", stopAgent);
+  if (btnAgentClose) btnAgentClose.addEventListener("click", closeAgentPanel);
+
+  document.getElementById("btn-agent-approve")?.addEventListener("click", () => {
+    if (pendingApproval) {
+      window.wotch.approveAction(pendingApproval.runId, pendingApproval.actionId, "approve");
+      hideApprovalDialog();
+    }
+  });
+  document.getElementById("btn-agent-deny")?.addEventListener("click", () => {
+    if (pendingApproval) {
+      window.wotch.rejectAction(pendingApproval.runId, pendingApproval.actionId, "User denied");
+      hideApprovalDialog();
+    }
+  });
+  document.getElementById("btn-agent-stop-approval")?.addEventListener("click", () => {
+    if (pendingApproval) {
+      window.wotch.stopAgent(pendingApproval.runId);
+      hideApprovalDialog();
+    }
+  });
+
+  // Agent tree controls
+  document.getElementById("btn-agent-tree-refresh")?.addEventListener("click", renderAgentTree);
+  document.getElementById("agent-tree-content")?.addEventListener("click", (e) => {
+    const stopBtn = e.target.closest(".agent-tree-stop");
+    if (stopBtn) {
+      const runId = stopBtn.dataset.runId;
+      if (runId) window.wotch.stopAgent(runId).then(renderAgentTree);
+    }
+  });
+}
+
+// Add "Run Agent" command to palette
+COMMANDS.push(
+  { name: "Agent: Open Agent Panel", shortcut: "Ctrl+Shift+A", action: () => openAgentPanel() },
+  { name: "Agent: Emergency Stop All", shortcut: "Ctrl+Shift+K", action: async () => {
+    try {
+      const runs = await window.wotch.getAgentRuns();
+      for (const run of runs) { await window.wotch.stopAgent(run.runId); }
+      showToast("All agents stopped", "info");
+    } catch { showToast("Failed to stop agents", "error"); }
+  }},
+);
 
 // ── Init ───────────────────────────────────────────────
 // Auto-detect projects on startup and pre-select first VS Code one
@@ -2105,6 +2639,12 @@ paletteList.addEventListener("click", (e) => {
   window.wotch.onUpdateDownloaded?.((version) => {
     showToast(`Update v${version} ready — restart to install`, "success");
   });
+
+  // Initialize plugin system listeners
+  initPluginListeners();
+
+  // Initialize agent system listeners
+  initAgentListeners();
 
   // Initialize chat panel model selector
   initChatModelSelector();

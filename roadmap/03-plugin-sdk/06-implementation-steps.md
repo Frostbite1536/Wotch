@@ -14,7 +14,7 @@ Create `~/.wotch/plugins/` directory structure. `discoverPlugins()` scans for su
 
 **Files:** `src/main.js`
 
-`validateManifest(manifest)` checks required fields (name, version, displayName, main), name format (lowercase alphanumeric with hyphens), semver version, valid permissions list, and command contributions.
+`validateManifest(manifest)` checks required fields (name, version, displayName, description), at least one of main or renderer, name format (lowercase alphanumeric with hyphens), semver version, valid permissions list, and command contributions.
 
 Valid permissions: `fs.read`, `fs.write`, `process.exec`, `net.fetch`, `git.read`, `git.write`, `terminal.read`, `terminal.write`, `ui.panels`, `ui.notifications`.
 
@@ -26,13 +26,13 @@ Valid permissions: `fs.read`, `fs.write`, `process.exec`, `net.fetch`, `git.read
 
 **Files:** `src/main.js`
 
-`PluginHost` class managing plugin lifecycle: discovered → loaded → active → disposed.
+`PluginHost` class managing plugin lifecycle: discovered → validated → enabled → activated → deactivated → disposed.
 
-- `loadAll()` — discover plugins, auto-activate enabled ones from settings
-- `activate(id)` — require plugin's main file, call `activate(api)`, register commands/detectors
-- `deactivate(id)` — call `deactivate()`, clean up commands and detectors
+- `loadAll()` — discover plugins, validate manifests, auto-activate enabled ones from settings
+- `activate(id)` — create vm context, load plugin's main file, call `activate(context)`, register commands/detectors
+- `deactivate(id)` — call `deactivate()`, clean up commands and detectors, destroy vm context
 - `getPluginList()` — return list with state and permissions for UI
-- `saveEnabledPlugins()` — persist to `settings.enabledPlugins`
+- `savePluginState(id)` — persist enabled/disabled and permissions to `settings.plugins`
 
 **Lifecycle:** Call `pluginHost.loadAll()` after `app.whenReady()`.
 
@@ -48,10 +48,11 @@ Valid permissions: `fs.read`, `fs.write`, `process.exec`, `net.fetch`, `git.read
 
 **Always available (no permissions):**
 - `commands.register(id, title, handler)` — register command in palette
-- `status.registerDetector(detector)` — custom status detector
 - `status.onChanged(callback)` — subscribe to status changes
-- `log.info/warn/error(msg)` — prefixed logging
-- `settings.register/get/set` — per-plugin settings under `settings.pluginData[pluginId]`
+- `settings.get/set/getAll/onChanged` — per-plugin settings under `plugins.<name>.settings`
+
+**Requires `terminal.read`:**
+- `status.registerDetector(detectorId, callback)` — custom status detector (receives terminal data)
 
 **Permission-gated:**
 - `fs.readFile/writeFile/listDir` — requires `fs.read`/`fs.write`
@@ -69,7 +70,7 @@ Valid permissions: `fs.read`, `fs.write`, `process.exec`, `net.fetch`, `git.read
 
 **Files:** `src/preload.js`, `src/main.js`
 
-Expose plugin management to renderer: `getPluginList`, `activatePlugin`, `deactivatePlugin`, `executePluginCommand`, `getPluginSettings`, `savePluginSetting`.
+Expose plugin management to renderer: `plugin-list`, `plugin-enable`, `plugin-disable`, `plugin-execute-command`, `plugin-get-settings`, `plugin-save-setting`.
 
 Events from main: `plugin-command-registered`, `plugin-settings-registered`, `plugin-panel-registered`, `plugin-status-update`.
 
@@ -105,7 +106,7 @@ Terminal data callbacks for plugins with `terminal.read` permission.
 
 **Files:** `src/index.html`, `src/renderer.js`, `src/preload.js`
 
-Plugins with `ui.panels` permission can register custom panels via `api.ui.addPanel()`. Panels appear as additional view toggle buttons alongside Terminal and Chat. Panel HTML is sanitized (no scripts, no event handlers, no javascript: URLs).
+Plugins with `ui.panels` permission can register custom panels via `api.ui.addPanel()`. Panels appear as additional view toggle buttons alongside Terminal and Chat. Panel content is rendered inside a sandboxed iframe (`sandbox="allow-scripts"`, no `allow-same-origin`). Communication happens via `postMessage`.
 
 ---
 
@@ -119,9 +120,9 @@ Create `~/.wotch/plugins/word-counter/` with manifest.json and index.js. Simple 
 
 **Files:** `docs/INVARIANTS.md`
 
-- **INV-SEC-012:** Plugin Isolation — no raw Node.js access, HTML sanitized, no cross-plugin state access
-- **INV-SEC-013:** Plugin Permission Enforcement — checks at API boundary, not implementation
-- **INV-DATA-007:** Plugin Settings Isolation — under `pluginData[pluginId]`, preserved on general save, not deleted on deactivate
+- **INV-SEC-017:** Plugin Isolation — no raw Node.js access, renderer plugins run in sandboxed iframes, no cross-plugin state access
+- **INV-SEC-018:** Plugin Permission Enforcement — checks at API boundary via capability-based proxies, not implementation
+- **INV-DATA-007:** Plugin Settings Isolation — under `plugins.<name>` in settings.json, preserved on general save, not deleted on deactivate
 
 ---
 
@@ -142,8 +143,8 @@ Create `~/.wotch/plugins/word-counter/` with manifest.json and index.js. Simple 
 | `src/preload.js` | ~8 new IPC bridge methods |
 | `src/index.html` | Plugin settings section HTML/CSS |
 | `src/renderer.js` | Plugin list rendering, command palette integration, panel extension rendering, HTML sanitization |
-| `docs/INVARIANTS.md` | INV-SEC-012, INV-SEC-013, INV-DATA-007 |
+| `docs/INVARIANTS.md` | INV-SEC-017, INV-SEC-018, INV-DATA-007 |
 
 ## New IPC Channels (10)
 
-`get-plugin-list`, `activate-plugin`, `deactivate-plugin`, `execute-plugin-command`, `get-plugin-settings`, `save-plugin-setting`, `plugin-command-registered` (m→r), `plugin-settings-registered` (m→r), `plugin-panel-registered` (m→r), `plugin-status-update` (m→r)
+`plugin-list`, `plugin-enable`, `plugin-disable`, `plugin-execute-command`, `plugin-get-settings`, `plugin-save-setting`, `plugin-command-registered` (m→r), `plugin-settings-registered` (m→r), `plugin-panel-registered` (m→r), `plugin-status-update` (m→r)

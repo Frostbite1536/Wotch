@@ -64,7 +64,7 @@ These modules communicate via IPC channels through the existing preload bridge p
 │  │  ┌──────┴────────────────┴──────────────────────┴──────────┐  │   │
 │  │  │                   ToolRegistry                          │  │   │
 │  │  │                                                         │  │   │
-│  │  │  Shell.*       FileSystem.*    Git.*                     │  │   │
+│  │  │  Shell.*       FileSystem.*    Git.*        Agent.*       │  │   │
 │  │  │  Terminal.*    Project.*       Wotch.*                   │  │   │
 │  │  └─────────┬───────────┬──────────┬────────────────────────┘  │   │
 │  └────────────┼───────────┼──────────┼──────────────────────────┘   │
@@ -141,7 +141,7 @@ class AgentRuntime {
 
   // Lifecycle
   async run()          // Main conversation loop
-  async stop()         // Abort immediately
+  async stop()         // Abort immediately (also stops child agents)
   pause()              // Pause at next tool call boundary
   resume()             // Resume after pause
 
@@ -150,6 +150,11 @@ class AgentRuntime {
   getTurnCount()       // Current turn number
   getTokensUsed()      // Total tokens consumed
   getMessages()        // Conversation history
+
+  // Sub-agent tracking
+  parentRunId          // null for root agents, runId of parent for sub-agents
+  depth                // 0 for root, increments for each nesting level (max MAX_AGENT_DEPTH=3)
+  childRunIds[]        // List of spawned sub-agent runIds
 
   // Internal
   _buildSystemPrompt(context)
@@ -388,6 +393,26 @@ Agents DO share (read-only or via Wotch APIs):
 - Project information (via `Project.getInfo`)
 - File system (via `FileSystem.*` tools, which use Node.js `fs` module)
 
+## Sub-Agent Spawning
+
+Agents can spawn child agents via the `Agent.spawn` tool, enabling tree-structured task delegation:
+
+1. **Depth limit:** Maximum nesting depth is `MAX_AGENT_DEPTH = 3`. Deeper spawning is rejected with an error.
+2. **Parent-child tracking:** `AgentRuntime` tracks `parentRunId`, `depth`, and `childRunIds[]`. `AgentManager.getRunningAgents()` includes this hierarchy data.
+3. **Cascading stop:** Stopping a parent agent also stops all its child agents recursively. Emergency stop halts the entire tree.
+4. **Concurrent limit applies globally:** Sub-agents count toward the `maxConcurrentAgents` limit (default 3), preventing runaway spawning.
+5. **Context inheritance:** Child agents inherit the project context (path, branch) from their parent but get their own conversation loop and tool instances.
+6. **Agent tree IPC:** The `agent-tree` IPC channel returns a nested tree structure for UI visualization.
+
+## Agent Tree Visualization
+
+The agent panel includes a real-time tree view that:
+- Shows all running agents in a hierarchical tree (parent → child)
+- Displays per-node status (running/waiting/completed/failed/stopped) with color-coded icons
+- Shows iteration progress for running agents
+- Provides per-node "Stop" buttons to halt individual agents or entire subtrees
+- Auto-refreshes on agent start/complete/stop events
+
 ## Concurrency Model
 
 - **Max concurrent agents:** 3 (configurable in settings). Additional start requests are queued.
@@ -396,19 +421,17 @@ Agents DO share (read-only or via Wotch APIs):
 - **Approval queue:** Each agent has its own approval queue. Multiple approval dialogs can be shown (stacked in the UI).
 - **PTY sharing:** Agents use a dedicated "agent PTY" per project — not the user's visible terminal tabs. This prevents agents from interfering with user input. The Shell.execute tool creates a temporary PTY, runs the command, captures output, and destroys the PTY.
 
-## File Layout (New Files)
+## File Layout
+
+Following Wotch's convention of keeping logic in `src/main.js` (same pattern as PluginHost, ClaudeStatusDetector, etc.):
 
 ```
 src/
-  main.js                    # Modified: instantiate AgentManager, register IPC
-  preload.js                 # Modified: add agent IPC bridge methods
-  renderer.js                # Modified: add agent panel logic
-  index.html                 # Modified: add agent panel HTML structure
-  agent-manager.js           # NEW: AgentManager class
-  agent-loader.js            # NEW: AgentLoader class
-  agent-runtime.js           # NEW: AgentRuntime class
-  agent-tools.js             # NEW: ToolRegistry + all tool implementations
-  agent-trust.js             # NEW: TrustManager class
+  main.js                    # AgentManager, AgentRuntime, ToolRegistry, TrustManager,
+                             # agent loader, IPC handlers, trigger system
+  preload.js                 # Add agent IPC bridge methods (~11 methods)
+  renderer.js                # Agent panel logic, progress display, approval UI
+  index.html                 # Agent panel HTML structure + CSS
 
 ~/.wotch/
   settings.json              # Modified: add agentSettings key
@@ -442,6 +465,7 @@ src/
 | `agent-runs` | `{}` | `AgentRun[]` |
 | `agent-get-trust` | `{ agentId }` | `{ mode, overrides }` |
 | `agent-set-trust` | `{ agentId, mode }` | `{ success }` |
+| `agent-tree` | `{}` | `AgentTreeNode[]` (nested with `children`) |
 
 ### Main → Renderer (send)
 
@@ -450,6 +474,7 @@ src/
 | `agent-event` | `{ runId, type, data, timestamp }` |
 | `agent-approval-request` | `{ runId, actionId, agentName, tool, input, reasoning }` |
 | `agent-list-changed` | `{ agents: AgentDefinition[] }` |
+| `agent-suggestion` | `{ agentId, agentName, trigger, tabId }` |
 
 ### Event Types in `agent-event`
 
@@ -458,7 +483,7 @@ src/
 | `started` | `{ agentId, agentName, context }` |
 | `reasoning` | `{ text }` (streaming tokens) |
 | `tool-call` | `{ tool, input }` |
-| `tool-result` | `{ tool, output, durationMs }` |
+| `tool-result` | `{ tool, input, output, durationMs }` |
 | `approval-waiting` | `{ actionId, tool, input }` |
 | `approval-resolved` | `{ actionId, decision }` |
 | `warning` | `{ message }` (turn limit, token limit) |
@@ -491,17 +516,25 @@ stopAgent: (runId) => ipcRenderer.invoke("agent-stop", { runId }),
 approveAction: (runId, actionId, decision) => ipcRenderer.invoke("agent-approve", { runId, actionId, decision }),
 rejectAction: (runId, actionId, reason) => ipcRenderer.invoke("agent-reject", { runId, actionId, reason }),
 getAgentRuns: () => ipcRenderer.invoke("agent-runs"),
+getAgentTree: () => ipcRenderer.invoke("agent-tree"),
 getAgentTrust: (agentId) => ipcRenderer.invoke("agent-get-trust", { agentId }),
 setAgentTrust: (agentId, mode) => ipcRenderer.invoke("agent-set-trust", { agentId, mode }),
 
 onAgentEvent: (callback) => {
+  ipcRenderer.removeAllListeners("agent-event");
   ipcRenderer.on("agent-event", (_e, payload) => callback(payload));
 },
 onAgentApproval: (callback) => {
+  ipcRenderer.removeAllListeners("agent-approval-request");
   ipcRenderer.on("agent-approval-request", (_e, payload) => callback(payload));
 },
 onAgentListChanged: (callback) => {
+  ipcRenderer.removeAllListeners("agent-list-changed");
   ipcRenderer.on("agent-list-changed", (_e, payload) => callback(payload));
+},
+onAgentSuggestion: (callback) => {
+  ipcRenderer.removeAllListeners("agent-suggestion");
+  ipcRenderer.on("agent-suggestion", (_e, payload) => callback(payload));
 },
 ```
 
@@ -520,15 +553,9 @@ Add the agent panel HTML structure inside the `#panel` container, as a sibling t
 
 ## API Key Management
 
-Agents require an Anthropic API key to call the Claude API. The key is stored in `~/.wotch/credentials.json` (file mode 0o600).
+Agents require an Anthropic API key to call the Claude API. The key is managed by the existing `CredentialManager` from Plan 2, which stores the encrypted key in `~/.wotch/credentials` (file mode 0o600, encrypted at rest via `safeStorage` or AES-256-GCM fallback per INV-SEC-014).
 
-```json
-{
-  "anthropicApiKey": "sk-ant-..."
-}
-```
-
-The AgentManager reads this on initialization. If no key is found, agent features are disabled and the agent panel shows a "Configure API Key" prompt. The settings panel gets a new "Agent SDK" section where users can enter/update their API key.
+The AgentManager calls `credentialManager.getKey()` on initialization. If no key is found, agent features are disabled and the agent panel shows a "Configure API Key" prompt that links to the existing Claude API settings section.
 
 The key is never sent to the renderer process. All API calls happen in the main process.
 

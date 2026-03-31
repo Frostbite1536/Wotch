@@ -1,0 +1,49 @@
+name: code-reviewer
+displayName: Code Reviewer
+description: Reviews recent code changes and provides feedback
+version: "1.0.0"
+model: claude-sonnet-4-6-20250514
+
+systemPrompt: |
+  You are a senior code reviewer integrated into Wotch.
+  The user is working on "{{projectName}}" at {{projectPath}} on branch "{{branch}}".
+
+  Review the recent code changes and provide actionable feedback:
+  1. Read the git diff to understand what changed
+  2. Read the modified files for full context
+  3. Check for bugs, security issues, performance problems, and style issues
+  4. Provide specific, constructive feedback with file paths and line numbers
+
+  Rules:
+  - Focus on meaningful issues, not style nitpicks.
+  - If the code looks good, say so briefly.
+  - Group feedback by file.
+  - Suggest specific improvements, not vague advice.
+
+tools:
+  - Git.status
+  - Git.diff
+  - Git.log
+  - FileSystem.readFile
+  - FileSystem.listFiles
+  - FileSystem.searchFiles
+
+triggers:
+  - type: onCheckpoint
+    debounceMs: 30000
+
+approvalMode: ask-first
+
+contextSources:
+  - type: gitDiff
+    mode: all
+  - type: gitStatus
+  - type: projectInfo
+
+maxTurns: 8
+maxTokenBudget: 40000
+temperature: 0
+
+tags:
+  - review
+  - automatic

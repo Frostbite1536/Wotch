@@ -880,6 +880,66 @@ function formatTokens(n) {
 }
 ```
 
+## Tool-Specific Rich Rendering
+
+The activity log uses `renderToolCallRich(tool, input)` and `renderToolResultRich(tool, output, durationMs)` functions to display context-aware visualizations instead of raw JSON:
+
+| Tool | Call Display | Result Display |
+|------|-------------|----------------|
+| FileSystem.readFile / Read | File icon + filename | Line count + 8-line content preview |
+| FileSystem.writeFile / Write | Pencil icon + filename + size | Success confirmation with filename |
+| Edit | Pencil icon + filename | Diff view with +/- syntax highlighting |
+| FileSystem.deleteFile | Trash icon + filename (red) | Deletion confirmation |
+| FileSystem.searchFiles / Grep | Magnifier icon + search pattern | Match count + file list (top 6) |
+| FileSystem.listFiles / Glob | Folder icon + directory name | Dir/file count summary |
+| Shell.execute / Bash | Play icon + command in code block | Exit code (color-coded) + stdout preview |
+| Git.status | Git icon | Branch name + changed file count |
+| Git.diff | Git icon + mode | +/- counts + colored diff preview (15 lines) |
+| Git.log | Git icon + commit count | Commit hash + message list (top 5) |
+| Git.checkpoint | Check icon + message | Success confirmation |
+| Agent.spawn | Gear icon + agent ID | Sub-agent run ID |
+| Wotch.showNotification | Bell icon + message preview | Sent confirmation |
+
+## Agent Tree Visualization
+
+When agents are running (especially with sub-agent spawning), the agent panel shows a real-time tree:
+
+```
+Agent Tree                      [Refresh]
+──────────────────────────────────────────
+▶ Code Reviewer  running (3/8)     [Stop]
+  └─ ▶ Test Writer  running (1/10) [Stop]
+  └─ ✓ Error Fixer  completed
+```
+
+### Tree Features:
+- **Auto-display:** Appears when any agents are running, hidden when all are idle
+- **Status icons:** ▶ running, ⏸ waiting-approval, ✓ completed, ✗ failed, ■ stopped, ○ idle
+- **Color coding:** State-specific colors (accent=running, yellow=waiting, green=completed, red=failed)
+- **Iteration progress:** Shows current turn / max turns for running agents
+- **Per-node stop:** Individual "Stop" buttons on running/waiting agents
+- **Cascading stop:** Stopping a parent also stops all descendants
+- **Auto-refresh:** Updates on agent start/complete/stop events + manual refresh button
+
+### IPC: `agent-tree`
+Returns a nested tree structure:
+```json
+[
+  {
+    "runId": "abc", "agentId": "code-reviewer", "agentName": "Code Reviewer",
+    "state": "running", "iteration": 3, "maxTurns": 8,
+    "parentRunId": null, "depth": 0,
+    "children": [
+      {
+        "runId": "def", "agentId": "test-writer", "agentName": "Test Writer",
+        "state": "running", "iteration": 1, "maxTurns": 10,
+        "parentRunId": "abc", "depth": 1, "children": []
+      }
+    ]
+  }
+]
+```
+
 ## Responsive Behavior
 
 - If the expanded window width is less than 500px, the agent panel is automatically hidden (not enough room for both terminal and panel).

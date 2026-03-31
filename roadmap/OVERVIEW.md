@@ -78,9 +78,11 @@ Embed the Claude Agent SDK to run custom AI agents natively inside Wotch. Agents
 - Agent SDK embedded in main process
 - Agent definition format (tools, triggers, approval modes)
 - Per-project agent configurations (`.wotch/agents/`)
-- Agent activity panel with streaming reasoning/action display
+- Agent activity panel with tool-specific rich rendering (diffs, search results, shell output)
 - Graduated trust model (suggest-only → ask-first → auto-execute)
-- Built-in agents: code reviewer, test writer, error fixer
+- Sub-agent spawning via `Agent.spawn` tool with depth limits and cascading stop
+- Agent tree visualization showing parent-child hierarchies with per-node controls
+- Built-in agents: code reviewer, test writer, error fixer, deploy assistant
 
 ---
 

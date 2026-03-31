@@ -193,7 +193,7 @@ Array of configuration keys the plugin registers, appearing in the settings pane
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | `string` | **yes** | Setting key. Must be prefixed with plugin name. Stored in `~/.wotch/settings.json` under `pluginSettings.<id>`. |
+| `id` | `string` | **yes** | Setting key. Must be prefixed with plugin name. Stored in `~/.wotch/settings.json` under `plugins.<name>.settings.<id>`. |
 | `title` | `string` | **yes** | Label shown in settings UI. |
 | `type` | `string` | **yes** | One of: `"string"`, `"number"`, `"boolean"`. |
 | `default` | `any` | **yes** | Default value. Must match declared type. |

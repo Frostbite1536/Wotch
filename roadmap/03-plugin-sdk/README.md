@@ -18,7 +18,7 @@ This plan introduces a plugin system to Wotch, transforming it from a standalone
 
 - Plugin manifest format (`manifest.json`) with validation
 - Plugin discovery from `~/.wotch/plugins/<plugin-name>/`
-- Plugin lifecycle: `init` -> `activate` -> `deactivate` -> `dispose`
+- Plugin lifecycle: `discovered` -> `validated` -> `enabled` -> `activated` -> `deactivated` -> `disposed`
 - Main-process plugin host running plugins in Node.js `vm` contexts with permission-gated API proxies
 - Renderer-side plugin bridge: sandboxed iframes for panel contributions, message-passing API for command/status contributions
 - Permission system: 10 permission scopes, install-time prompting, revocation UI
@@ -73,9 +73,8 @@ Monitors terminal output for build errors/warnings and displays a summary panel 
 
 Plan 3 benefits from Plan 0's structured event system:
 
-- **Plugin event API**: Plugins can subscribe to structured hook events (`PreToolUse`, `PostToolUse`, `Stop`, `Notification`) via `wotch.events.onClaudeHook(callback)` instead of parsing terminal output with their own regex. This is the recommended approach for plugins that need to react to Claude Code activity.
-- **MCP-compatible plugins**: The plugin manifest can declare MCP tools, and the plugin host can register them with Claude Code via the existing MCP server infrastructure. A plugin that adds a "deploy" tool automatically becomes callable by Claude Code.
-- **MCP tool contributions**: The plugin manifest can declare MCP tools, and the plugin host can register them with Claude Code's MCP server infrastructure. A plugin that adds a "deploy" tool automatically becomes callable by Claude Code.
+- **Plugin event API (future)**: If Plan 0 is implemented, a `wotch.events` namespace could be added to let plugins subscribe to structured hook events (`PreToolUse`, `PostToolUse`, `Stop`, `Notification`) instead of parsing terminal output. This is not part of the v1 API surface — plugins use `wotch.terminal.onData()` for terminal output access.
+- **MCP tool contributions (future)**: A future version could allow plugin manifests to declare MCP tools registered with Claude Code's MCP server infrastructure. This requires Plan 0 and is not part of the v1 manifest spec or API surface.
 
 If Plan 0 is not yet implemented, plugins fall back to the `wotch.terminal.onData()` API for raw terminal output access. All plugin capabilities work — they just have less structured Claude Code data to work with.
 

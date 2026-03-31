@@ -199,6 +199,78 @@ If conversation JSON files in `~/.wotch/conversations/` are missing, corrupted, 
 
 **Enforcement:** try/catch around JSON.parse in all conversation loading code.
 
+### INV-SEC-017: Plugin Isolation
+Plugins running in the main process execute inside `vm.createContext()` sandboxes with no access to `require`, `process`, `__dirname`, or any Node.js globals beyond basic JS builtins and the permission-gated `wotch` API. Renderer plugins run in `<iframe sandbox="allow-scripts">` with no `allow-same-origin`. Plugins cannot access each other's state, memory, or subscriptions.
+
+**Rationale:** A plugin must not be able to access Node.js APIs directly (file system, network, child processes) without going through the permission system. Cross-plugin isolation prevents a malicious plugin from tampering with or reading data from other plugins.
+
+**Enforcement:** `vm.createContext` with `codeGeneration: { strings: false, wasm: false }`. Renderer iframes lack `allow-same-origin`. Code review of sandbox setup. Each plugin gets its own API proxy instance.
+
+### INV-SEC-018: Plugin Permission Enforcement
+Every permission-gated API call must check permissions at the API boundary (in `createPluginApi`) before executing. Permission checks must use a capability-based model — the API proxy is constructed with only the methods the plugin is allowed to call. Unpermitted calls throw `PermissionDeniedError` synchronously.
+
+**Rationale:** If permission checks were done inside the implementation rather than at the boundary, a code path might accidentally bypass them. The capability model ensures a plugin physically cannot call a method it lacks permission for.
+
+**Enforcement:** Code review. The `createPluginApi` function gates each namespace method with `requirePermission()`.
+
+### INV-DATA-007: Plugin Settings Isolation
+Plugin settings are stored under `settings.plugins.<name>` in `~/.wotch/settings.json`. Each plugin's settings are namespaced by plugin name. Plugin settings are preserved when general settings are saved or reset. Disabling a plugin does not delete its settings or storage data.
+
+**Rationale:** Plugins should not lose user configuration when disabled/re-enabled. Plugin settings must not collide with core settings or each other.
+
+**Enforcement:** Plugin settings are accessed exclusively via `settings.plugins[pluginId].settings`. The `reset-settings` handler preserves `plugins`. Plugin storage is in a separate `~/.wotch/plugin-data/<name>/` directory.
+
+## Agents
+
+### INV-AGENT-001: Agent Process Isolation
+Agents run in the Electron main process but have no direct access to Electron APIs (BrowserWindow, ipcMain, etc.). They interact with the system exclusively through the ToolRegistry. Agent code cannot import Electron modules or access the `mainWindow` object.
+
+**Rationale:** Direct Electron API access would let an agent manipulate the UI, register IPC handlers, or bypass the trust model entirely.
+
+**Enforcement:** Agent tools are injected functions, not module references. The AgentRuntime never passes Electron objects to tool implementations.
+
+### INV-AGENT-002: Agent File Sandbox
+All file operations by agents are sandboxed to the project directory. The `ensureInProject()` function resolves paths and verifies they are within the project root. Path traversal (`..`) that escapes the project is rejected. Symlinks pointing outside the project directory are rejected.
+
+**Rationale:** An agent with file write access must not be able to modify system files, SSH keys, or Wotch's own configuration.
+
+**Enforcement:** Every FileSystem tool calls `ensureInProject()` before any fs operation. The function uses `path.resolve()` and `startsWith()` checks.
+
+### INV-AGENT-003: Agent API Key Isolation
+The Anthropic API key used by agents is stored in the main process only (via the existing CredentialManager). It is never sent to the renderer process. The AgentRuntime receives the key directly from `credentialManager.getKey()`.
+
+**Rationale:** The renderer is the less-trusted process. API key exposure in the renderer would allow exfiltration via crafted terminal output.
+
+**Enforcement:** No IPC handler returns the API key. Code review of agent IPC channels.
+
+### INV-AGENT-004: Agent Shell Safety
+Shell commands executed by agents use `pty.spawn` with explicit arguments. The `Shell.execute` tool runs commands in a temporary PTY (not the user's visible terminal). Dangerous command patterns (rm -rf, git push --force, sudo, etc.) are detected and always require approval regardless of trust mode.
+
+**Rationale:** Shell execution is the highest-risk agent capability. Separating agent PTYs from user terminals prevents interference, and dangerous pattern detection prevents catastrophic commands.
+
+**Enforcement:** `DANGEROUS_COMMAND_PATTERNS` regex array in main.js. The `_needsApproval()` method in AgentRuntime checks all patterns.
+
+### INV-AGENT-005: Dangerous Action Approval
+Actions classified as `dangerous` (file deletion, force push, etc.) require explicit user approval in ALL trust modes, including `auto-execute`. There is no mode that bypasses all approvals.
+
+**Rationale:** Certain actions are irreversible. Even a fully trusted agent should not delete files or force-push without human confirmation.
+
+**Enforcement:** `_needsApproval()` returns `true` for `dangerous` danger level regardless of trust mode.
+
+### INV-AGENT-006: Emergency Stop
+Emergency stop (Ctrl+Shift+K) aborts all running agents within 500ms by setting `cancelled = true` on every AgentRuntime and resolving all pending approval promises as "stop". No agent code can block, catch, or prevent emergency stop. After emergency stop, each affected agent's trust level is automatically demoted by one tier.
+
+**Rationale:** The user must always have an immediate escape hatch. An agent that blocks emergency stop would be a critical safety failure.
+
+**Enforcement:** `emergencyStopAll()` method iterates all runtimes synchronously. The `cancelled` flag is checked at every loop iteration and tool boundary.
+
+### INV-AGENT-007: Sub-Agent Depth Limit
+Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `MAX_AGENT_DEPTH = 3`. Each spawned sub-agent counts toward the global `maxConcurrentAgents` limit. Stopping a parent agent cascades to all its descendants recursively. Sub-agents inherit project context but get their own conversation loop, tool instances, and approval queue.
+
+**Rationale:** Without depth limits, a recursive or runaway agent could spawn infinite sub-agents, exhausting API credits and system resources. The cascading stop ensures no orphaned agent runs persist after a parent is halted.
+
+**Enforcement:** `Agent.spawn` tool checks `context._agentDepth` before spawning. `AgentRuntime.stop()` iterates `childRunIds` and stops each recursively. `AgentManager.startAgent()` enforces `maxConcurrentAgents` globally.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -211,3 +283,6 @@ If conversation JSON files in `~/.wotch/conversations/` are missing, corrupted, 
 | 2026-03-31 | INV-SEC-006, INV-SEC-007, INV-SEC-008 | Added for Claude Code deep integration | Hook receiver and MCP IPC server localhost-only; MCP tools read-only + additive |
 | 2026-03-31 | INV-SEC-009 through INV-SEC-013 | Added for Local API | API localhost-only, token file permissions, DNS rebinding protection, timing-safe comparison, SSH profile redaction |
 | 2026-03-31 | INV-SEC-014, INV-SEC-015, INV-DATA-006 | Added for Claude API integration | API key encryption at rest, API key never in renderer, conversation persistence resilience |
+| 2026-03-31 | INV-SEC-017, INV-SEC-018, INV-DATA-007 | Added for Plugin SDK | Plugin vm/iframe isolation, permission boundary enforcement, plugin settings isolation |
+| 2026-03-31 | INV-AGENT-001 through INV-AGENT-006 | Added for Agent SDK | Agent process isolation, file sandbox, API key isolation, shell safety, dangerous action approval, emergency stop |
+| 2026-03-31 | INV-AGENT-007 | Added for sub-agent spawning | Depth limit, cascading stop, global concurrent limit enforcement |

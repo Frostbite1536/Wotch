@@ -5,6 +5,7 @@ const os = require("os");
 const fs = require("fs");
 const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
+const vm = require("vm");
 const { Client: SSHClient } = require("ssh2");
 const { ClaudeIntegrationManager } = require("./claude-integration-manager");
 const { ApiServer } = require("./api-server");
@@ -90,6 +91,15 @@ const DEFAULT_SETTINGS = {
   // Claude API chat
   apiBudgetMonthly: 0,       // 0 = unlimited
   chatDefaultModel: "claude-sonnet-4-6-20250514",
+  plugins: {},
+  agentSettings: {
+    enabled: true,
+    maxConcurrentAgents: 3,
+    defaultApprovalMode: "ask-first",
+    approvalTimeoutMs: 300000,
+    logRetentionDays: 30,
+    autoTriggerEnabled: true,
+  },
 };
 
 function loadSettings() {
@@ -1097,6 +1107,11 @@ function createPty(tabId, cwd) {
     }
     // Feed data to status detector
     claudeStatus.feed(tabId, data);
+    // Feed to plugin system (status detectors + terminal listeners)
+    const cleanData = claudeStatus.stripAnsi(data);
+    pluginHost.feedTerminalData(tabId, data, cleanData);
+    // Check agent triggers
+    agentManager.checkTriggers(tabId, cleanData);
     // Feed to API server terminal buffer + broadcast
     if (apiServer && apiServer.running) {
       apiServer.addTerminalData(tabId, data);
@@ -1669,6 +1684,1751 @@ class ClaudeStatusDetector {
 }
 
 const claudeStatus = new ClaudeStatusDetector();
+
+// ── Plugin System ──────────────────────────────────────────────────
+
+const PLUGINS_DIR = path.join(os.homedir(), ".wotch", "plugins");
+const PLUGIN_DATA_DIR = path.join(os.homedir(), ".wotch", "plugin-data");
+const VALID_PERMISSIONS = [
+  "fs.read", "fs.write", "process.exec", "net.fetch",
+  "git.read", "git.write", "terminal.read", "terminal.write",
+  "ui.panels", "ui.notifications",
+];
+const PLUGIN_NAME_RE = /^[a-z][a-z0-9-]{2,49}$/;
+const SEMVER_RE = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$/;
+const COMMAND_ID_RE = /^[a-z][a-z0-9-]+\.[a-zA-Z][a-zA-Z0-9.]+$/;
+const PLUGIN_LIFECYCLE_TIMEOUT = 5000;
+
+function validateManifest(manifest, dirName) {
+  const errors = [];
+  if (!manifest.name || typeof manifest.name !== "string") {
+    errors.push("Missing or invalid 'name'");
+  } else if (!PLUGIN_NAME_RE.test(manifest.name)) {
+    errors.push(`Invalid name format: ${manifest.name}`);
+  } else if (manifest.name !== dirName) {
+    errors.push(`Name '${manifest.name}' doesn't match directory '${dirName}'`);
+  }
+  if (!manifest.version || !SEMVER_RE.test(manifest.version)) {
+    errors.push("Missing or invalid 'version' (must be semver)");
+  }
+  if (!manifest.displayName || typeof manifest.displayName !== "string" || manifest.displayName.length > 100) {
+    errors.push("Missing or invalid 'displayName'");
+  }
+  if (!manifest.description || typeof manifest.description !== "string" || manifest.description.length > 500) {
+    errors.push("Missing or invalid 'description'");
+  }
+  if (!manifest.main && !manifest.renderer) {
+    errors.push("At least one of 'main' or 'renderer' must be specified");
+  }
+  if (manifest.main) {
+    if (typeof manifest.main !== "string" || !manifest.main.endsWith(".js") || manifest.main.includes("..")) {
+      errors.push("Invalid 'main' entry point");
+    }
+  }
+  if (manifest.renderer) {
+    if (typeof manifest.renderer !== "string" || !manifest.renderer.endsWith(".js") || manifest.renderer.includes("..")) {
+      errors.push("Invalid 'renderer' entry point");
+    }
+  }
+  if (manifest.permissions) {
+    if (!Array.isArray(manifest.permissions)) {
+      errors.push("'permissions' must be an array");
+    } else {
+      for (const p of manifest.permissions) {
+        if (!VALID_PERMISSIONS.includes(p)) errors.push(`Unknown permission: ${p}`);
+      }
+    }
+  }
+  if (manifest.contributes) {
+    if (manifest.contributes.commands) {
+      for (const cmd of manifest.contributes.commands) {
+        if (!cmd.id || !COMMAND_ID_RE.test(cmd.id)) errors.push(`Invalid command id: ${cmd.id}`);
+        else if (!cmd.id.startsWith(manifest.name + ".")) errors.push(`Command '${cmd.id}' must be prefixed with '${manifest.name}.'`);
+        if (!cmd.title) errors.push(`Command '${cmd.id}' missing title`);
+      }
+    }
+    if (manifest.contributes.statusDetectors) {
+      for (const det of manifest.contributes.statusDetectors) {
+        if (!det.id || !det.id.startsWith(manifest.name + ".")) errors.push(`Status detector '${det.id}' must be prefixed with '${manifest.name}.'`);
+      }
+    }
+    if (manifest.contributes.panels) {
+      if (!manifest.permissions || !manifest.permissions.includes("ui.panels")) {
+        errors.push("Panel contributions require 'ui.panels' permission");
+      }
+      for (const panel of manifest.contributes.panels) {
+        if (!panel.id || !panel.id.startsWith(manifest.name + ".")) errors.push(`Panel '${panel.id}' must be prefixed with '${manifest.name}.'`);
+      }
+    }
+    if (manifest.contributes.settings) {
+      for (const s of manifest.contributes.settings) {
+        if (!s.id || !s.id.startsWith(manifest.name + ".")) errors.push(`Setting '${s.id}' must be prefixed with '${manifest.name}.'`);
+        if (!["string", "number", "boolean"].includes(s.type)) errors.push(`Setting '${s.id}' has invalid type: ${s.type}`);
+      }
+    }
+    if (manifest.contributes.themes) {
+      const requiredColorKeys = ["--bg", "--bg-solid", "--border", "--accent", "--accent-dim", "--text", "--text-dim", "--text-muted", "--green", "termBg", "termFg", "termCursor"];
+      for (const theme of manifest.contributes.themes) {
+        if (!theme.id || !theme.id.startsWith(manifest.name + ".")) errors.push(`Theme '${theme.id}' must be prefixed with '${manifest.name}.'`);
+        if (!theme.colors) errors.push(`Theme '${theme.id}' missing colors`);
+        else {
+          for (const key of requiredColorKeys) {
+            if (!(key in theme.colors)) errors.push(`Theme '${theme.id}' missing color key: ${key}`);
+          }
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function createScopedConsole(pluginId) {
+  const prefix = `[wotch:plugin:${pluginId}]`;
+  return {
+    log: (...args) => console.log(prefix, ...args),
+    info: (...args) => console.log(prefix, ...args),
+    warn: (...args) => console.warn(prefix, ...args),
+    error: (...args) => console.error(prefix, ...args),
+  };
+}
+
+function createPluginApi(pluginId, manifest, grantedPermissions, pluginHost) {
+  function requirePermission(perm, method) {
+    if (!grantedPermissions.has(perm)) {
+      throw new Error(`Permission denied: '${perm}' required for ${method}`);
+    }
+  }
+
+  const api = {
+    version: app.getVersion() || "1.0.0",
+
+    // ── commands (no permission) ──
+    commands: {
+      register(cmd) {
+        if (!cmd.id || !cmd.title || !cmd.handler) throw new Error("Command requires id, title, handler");
+        pluginHost.registerCommand(pluginId, cmd);
+        return { dispose: () => pluginHost.unregisterCommand(pluginId, cmd.id) };
+      },
+      execute(commandId) {
+        return pluginHost.executeCommand(commandId);
+      },
+      list() {
+        return Promise.resolve(pluginHost.listCommands());
+      },
+    },
+
+    // ── status (registerDetector requires terminal.read) ──
+    status: {
+      onChanged(callback) {
+        pluginHost.addStatusListener(pluginId, callback);
+        return { dispose: () => pluginHost.removeStatusListener(pluginId, callback) };
+      },
+      getAll() {
+        return Promise.resolve(pluginHost.getAllStatuses());
+      },
+      get(tabId) {
+        return Promise.resolve(pluginHost.getTabStatus(tabId));
+      },
+      registerDetector(detectorId, callback) {
+        requirePermission("terminal.read", "status.registerDetector");
+        pluginHost.registerDetector(pluginId, detectorId, callback);
+        return { dispose: () => pluginHost.unregisterDetector(pluginId, detectorId) };
+      },
+    },
+
+    // ── ui ──
+    ui: {
+      addPanel(panel) {
+        requirePermission("ui.panels", "ui.addPanel");
+        pluginHost.registerPanel(pluginId, panel);
+        return {
+          dispose: () => pluginHost.unregisterPanel(pluginId, panel.id),
+          setHtml: (html) => pluginHost.updatePanel(pluginId, panel.id, html),
+          postMessage: (data) => pluginHost.postPanelMessage(pluginId, panel.id, data),
+          setVisible: (v) => pluginHost.setPanelVisible(pluginId, panel.id, v),
+        };
+      },
+      showNotification(options) {
+        requirePermission("ui.notifications", "ui.showNotification");
+        pluginHost.showNotification(pluginId, options);
+      },
+      isExpanded: () => Promise.resolve(isExpanded),
+      onExpansionChanged(callback) {
+        pluginHost.addExpansionListener(pluginId, callback);
+        return { dispose: () => pluginHost.removeExpansionListener(pluginId, callback) };
+      },
+    },
+
+    // ── tabs (read-only, no permission) ──
+    tabs: {
+      list() {
+        const list = [];
+        for (const [tabId] of ptyProcesses) {
+          list.push({ id: tabId, name: tabId, connectionType: "local", cwd: "", isActive: false });
+        }
+        return Promise.resolve(list);
+      },
+      getActive() {
+        return Promise.resolve(null); // Active tab is tracked in renderer
+      },
+      onCreated(callback) {
+        pluginHost.addTabListener(pluginId, "created", callback);
+        return { dispose: () => pluginHost.removeTabListener(pluginId, "created", callback) };
+      },
+      onClosed(callback) {
+        pluginHost.addTabListener(pluginId, "closed", callback);
+        return { dispose: () => pluginHost.removeTabListener(pluginId, "closed", callback) };
+      },
+      onActivated(callback) {
+        pluginHost.addTabListener(pluginId, "activated", callback);
+        return { dispose: () => pluginHost.removeTabListener(pluginId, "activated", callback) };
+      },
+    },
+
+    // ── terminal (read/write permission-gated) ──
+    terminal: {
+      onData(callback) {
+        requirePermission("terminal.read", "terminal.onData");
+        pluginHost.addTerminalListener(pluginId, callback);
+        return { dispose: () => pluginHost.removeTerminalListener(pluginId, callback) };
+      },
+      onTabData(tabId, callback) {
+        requirePermission("terminal.read", "terminal.onTabData");
+        const wrapper = (evt) => { if (evt.tabId === tabId) callback(evt.data); };
+        pluginHost.addTerminalListener(pluginId, wrapper);
+        return { dispose: () => pluginHost.removeTerminalListener(pluginId, wrapper) };
+      },
+      write(tabId, data) {
+        requirePermission("terminal.write", "terminal.write");
+        const p = ptyProcesses.get(tabId);
+        if (p) p.write(data);
+      },
+      writeActive(data) {
+        requirePermission("terminal.write", "terminal.writeActive");
+        // Write to first pty as fallback (active tab is renderer-side state)
+        const first = ptyProcesses.entries().next().value;
+        if (first) first[1].write(data);
+      },
+    },
+
+    // ── settings (no permission) ──
+    settings: {
+      get(settingId) {
+        const pluginSettings = (settings.plugins && settings.plugins[pluginId] && settings.plugins[pluginId].settings) || {};
+        if (settingId in pluginSettings) return Promise.resolve(pluginSettings[settingId]);
+        // Return default from manifest
+        const def = (manifest.contributes && manifest.contributes.settings || []).find(s => s.id === settingId);
+        return Promise.resolve(def ? def.default : undefined);
+      },
+      set(settingId, value) {
+        if (!settings.plugins) settings.plugins = {};
+        if (!settings.plugins[pluginId]) settings.plugins[pluginId] = {};
+        if (!settings.plugins[pluginId].settings) settings.plugins[pluginId].settings = {};
+        const old = settings.plugins[pluginId].settings[settingId];
+        settings.plugins[pluginId].settings[settingId] = value;
+        saveSettings(settings);
+        pluginHost.emitSettingChanged(pluginId, settingId, old, value);
+        return Promise.resolve();
+      },
+      onChanged(settingId, callback) {
+        pluginHost.addSettingListener(pluginId, settingId, callback);
+        return { dispose: () => pluginHost.removeSettingListener(pluginId, settingId, callback) };
+      },
+      getAll() {
+        const pluginSettings = (settings.plugins && settings.plugins[pluginId] && settings.plugins[pluginId].settings) || {};
+        const result = {};
+        for (const s of (manifest.contributes && manifest.contributes.settings || [])) {
+          result[s.id] = s.id in pluginSettings ? pluginSettings[s.id] : s.default;
+        }
+        return Promise.resolve(result);
+      },
+    },
+
+    // ── project (no permission) ──
+    project: {
+      getCurrent: () => Promise.resolve(null), // Project is renderer state
+      onChanged: (callback) => {
+        pluginHost.addProjectListener(pluginId, callback);
+        return { dispose: () => pluginHost.removeProjectListener(pluginId, callback) };
+      },
+      list: () => Promise.resolve([]),
+    },
+
+    // ── fs (requires fs.read / fs.write) ──
+    fs: {
+      readFile(filePath) {
+        requirePermission("fs.read", "fs.readFile");
+        return fs.promises.readFile(path.resolve(filePath), "utf-8");
+      },
+      writeFile(filePath, content) {
+        requirePermission("fs.write", "fs.writeFile");
+        const resolved = path.resolve(filePath);
+        return fs.promises.mkdir(path.dirname(resolved), { recursive: true })
+          .then(() => fs.promises.writeFile(resolved, content, { mode: 0o644 }));
+      },
+      appendFile(filePath, content) {
+        requirePermission("fs.write", "fs.appendFile");
+        return fs.promises.appendFile(path.resolve(filePath), content);
+      },
+      exists(filePath) {
+        requirePermission("fs.read", "fs.exists");
+        return fs.promises.access(path.resolve(filePath)).then(() => true).catch(() => false);
+      },
+      stat(filePath) {
+        requirePermission("fs.read", "fs.stat");
+        return fs.promises.stat(path.resolve(filePath)).then(s => ({
+          size: s.size, isFile: s.isFile(), isDirectory: s.isDirectory(),
+          modifiedMs: s.mtimeMs, createdMs: s.birthtimeMs,
+        }));
+      },
+      readdir(dirPath) {
+        requirePermission("fs.read", "fs.readdir");
+        return fs.promises.readdir(path.resolve(dirPath));
+      },
+      mkdir(dirPath) {
+        requirePermission("fs.write", "fs.mkdir");
+        return fs.promises.mkdir(path.resolve(dirPath), { recursive: true });
+      },
+      unlink(filePath) {
+        requirePermission("fs.write", "fs.unlink");
+        return fs.promises.unlink(path.resolve(filePath));
+      },
+    },
+
+    // ── process (requires process.exec) ──
+    process: {
+      exec(command, options = {}) {
+        requirePermission("process.exec", "process.exec");
+        return new Promise((resolve, reject) => {
+          exec(command, {
+            cwd: options.cwd || os.homedir(),
+            timeout: options.timeout || 30000,
+            maxBuffer: options.maxBuffer || 1048576,
+            env: options.env ? { ...process.env, ...options.env } : process.env,
+          }, (err, stdout, stderr) => {
+            resolve({ stdout: stdout || "", stderr: stderr || "", exitCode: err ? (err.code || 1) : 0 });
+          });
+        });
+      },
+      cwd: () => Promise.resolve(process.cwd()),
+      env: (name) => Promise.resolve(process.env[name]),
+    },
+
+    // ── net (requires net.fetch) ──
+    net: {
+      async fetch(url, options = {}) {
+        requirePermission("net.fetch", "net.fetch");
+        const mod = url.startsWith("https") ? require("https") : require("http");
+        return new Promise((resolve, reject) => {
+          const parsedUrl = new URL(url);
+          const reqOpts = {
+            hostname: parsedUrl.hostname, port: parsedUrl.port, path: parsedUrl.pathname + parsedUrl.search,
+            method: options.method || "GET", headers: options.headers || {},
+            timeout: options.timeout || 30000,
+          };
+          const req = mod.request(reqOpts, (res) => {
+            let body = "";
+            res.on("data", (chunk) => { body += chunk; if (body.length > 10485760) { req.destroy(); reject(new Error("Response too large")); } });
+            res.on("end", () => {
+              const headers = {};
+              for (const [k, v] of Object.entries(res.headers)) headers[k] = Array.isArray(v) ? v.join(", ") : v;
+              resolve({ status: res.statusCode, statusText: res.statusMessage, headers, body, ok: res.statusCode >= 200 && res.statusCode < 300 });
+            });
+          });
+          req.on("error", reject);
+          req.on("timeout", () => { req.destroy(); reject(new Error("Request timeout")); });
+          if (options.body) req.write(options.body);
+          req.end();
+        });
+      },
+    },
+
+    // ── git (requires git.read / git.write) ──
+    git: {
+      status(projectPath) {
+        requirePermission("git.read", "git.status");
+        const pp = projectPath || [...knownProjectPaths][0];
+        if (!pp) return Promise.resolve({ branch: "", changedFiles: 0, checkpointCount: 0, isGitRepo: false });
+        return Promise.resolve(gitGetStatus(pp));
+      },
+      diff(projectPath, mode) {
+        requirePermission("git.read", "git.diff");
+        const pp = projectPath || [...knownProjectPaths][0];
+        if (!pp) return Promise.resolve({ diff: "", stats: { additions: 0, deletions: 0, files: 0 } });
+        try {
+          const args = ["diff"];
+          if (mode === "staged") args.push("--cached");
+          const diff = execFileSync("git", args, { cwd: pp, encoding: "utf-8", timeout: 10000, maxBuffer: 1048576 }) || "";
+          return Promise.resolve({ diff, stats: { additions: 0, deletions: 0, files: 0 } });
+        } catch (err) { return Promise.resolve({ diff: `Error: ${err.message}`, stats: { additions: 0, deletions: 0, files: 0 } }); }
+      },
+      branch(projectPath) {
+        requirePermission("git.read", "git.branch");
+        const pp = projectPath || [...knownProjectPaths][0];
+        if (!pp) return Promise.resolve("");
+        try {
+          return Promise.resolve(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: pp, encoding: "utf-8", timeout: 5000 }).trim());
+        } catch { return Promise.resolve(""); }
+      },
+      log(projectPath, count = 10) {
+        requirePermission("git.read", "git.log");
+        const pp = projectPath || [...knownProjectPaths][0];
+        if (!pp) return Promise.resolve([]);
+        try {
+          const raw = execFileSync("git", ["log", `--max-count=${count}`, "--format=%H|||%s|||%an|||%aI"], { cwd: pp, encoding: "utf-8", timeout: 10000 });
+          return Promise.resolve(raw.trim().split("\n").filter(Boolean).map(line => {
+            const [hash, message, author, date] = line.split("|||");
+            return { hash, message, author, date };
+          }));
+        } catch { return Promise.resolve([]); }
+      },
+      checkpoint(projectPath, message) {
+        requirePermission("git.write", "git.checkpoint");
+        const pp = projectPath || [...knownProjectPaths][0];
+        if (!pp) return Promise.resolve({ success: false, message: "No project path" });
+        return Promise.resolve(gitCheckpoint(pp, message));
+      },
+    },
+  };
+
+  return api;
+}
+
+class PluginHost {
+  constructor() {
+    this.plugins = new Map();       // id → { manifest, state, context, module, errors }
+    this.commands = new Map();      // commandId → { pluginId, title, handler }
+    this.detectors = new Map();     // detectorId → { pluginId, callback, priority }
+    this.panels = new Map();        // panelId → { pluginId, title, html, icon, location }
+    this.statusListeners = [];      // [{ pluginId, callback }]
+    this.terminalListeners = [];    // [{ pluginId, callback }]
+    this.expansionListeners = [];   // [{ pluginId, callback }]
+    this.tabListeners = { created: [], closed: [], activated: [] };
+    this.settingListeners = new Map(); // settingId → [{ pluginId, callback }]
+    this.projectListeners = [];
+    this.errorCounts = new Map();   // pluginId → { count, firstError }
+    this.watcher = null;
+  }
+
+  async init() {
+    // Ensure plugin directories exist
+    try { fs.mkdirSync(PLUGINS_DIR, { recursive: true }); } catch { /* ok */ }
+    try { fs.mkdirSync(PLUGIN_DATA_DIR, { recursive: true }); } catch { /* ok */ }
+
+    // Discover and validate
+    await this.discover();
+
+    // Activate enabled plugins
+    for (const [id, plugin] of this.plugins) {
+      if (plugin.state === "validated") {
+        const pluginConfig = settings.plugins && settings.plugins[id];
+        if (pluginConfig && pluginConfig.enabled) {
+          await this.activate(id);
+        }
+      }
+    }
+
+    // Watch for new plugins
+    try {
+      this.watcher = fs.watch(PLUGINS_DIR, { persistent: false }, () => {
+        // Debounce: re-discover after a short delay
+        if (this._rediscoverTimer) clearTimeout(this._rediscoverTimer);
+        this._rediscoverTimer = setTimeout(() => this.discover(), 1000);
+      });
+    } catch (err) {
+      console.log("[wotch:plugins] Watch failed:", err.message);
+    }
+    console.log(`[wotch:plugins] Initialized, ${this.plugins.size} plugins discovered`);
+  }
+
+  async discover() {
+    let dirs;
+    try {
+      dirs = fs.readdirSync(PLUGINS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+    } catch { dirs = []; }
+
+    for (const dir of dirs) {
+      if (this.plugins.has(dir.name)) continue; // Already known
+      const manifestPath = path.join(PLUGINS_DIR, dir.name, "manifest.json");
+      try {
+        const raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        const errors = validateManifest(raw, dir.name);
+        if (errors.length > 0) {
+          console.warn(`[wotch:plugins] Invalid manifest for '${dir.name}':`, errors);
+          this.plugins.set(dir.name, { manifest: raw, state: "invalid", context: null, module: null, errors });
+        } else {
+          // Check entry point files exist
+          const pluginDir = path.join(PLUGINS_DIR, dir.name);
+          if (raw.main && !fs.existsSync(path.join(pluginDir, raw.main))) {
+            console.warn(`[wotch:plugins] '${dir.name}': main file '${raw.main}' not found`);
+            this.plugins.set(dir.name, { manifest: raw, state: "invalid", context: null, module: null, errors: [`Main file '${raw.main}' not found`] });
+            continue;
+          }
+          if (raw.renderer && !fs.existsSync(path.join(pluginDir, raw.renderer))) {
+            console.warn(`[wotch:plugins] '${dir.name}': renderer file '${raw.renderer}' not found`);
+            this.plugins.set(dir.name, { manifest: raw, state: "invalid", context: null, module: null, errors: [`Renderer file '${raw.renderer}' not found`] });
+            continue;
+          }
+          this.plugins.set(dir.name, { manifest: raw, state: "validated", context: null, module: null, errors: [] });
+          console.log(`[wotch:plugins] Discovered: ${dir.name} v${raw.version}`);
+        }
+      } catch (err) {
+        if (fs.existsSync(manifestPath)) {
+          console.warn(`[wotch:plugins] Failed to parse manifest for '${dir.name}':`, err.message);
+          this.plugins.set(dir.name, { manifest: null, state: "invalid", context: null, module: null, errors: [err.message] });
+        }
+        // No manifest.json = skip silently
+      }
+    }
+  }
+
+  async activate(id) {
+    const plugin = this.plugins.get(id);
+    if (!plugin || plugin.state === "activated") return;
+    if (plugin.state === "invalid") { console.warn(`[wotch:plugins] Cannot activate invalid plugin: ${id}`); return; }
+
+    const manifest = plugin.manifest;
+    const pluginDir = path.join(PLUGINS_DIR, id);
+
+    // Get granted permissions
+    const pluginConfig = settings.plugins && settings.plugins[id];
+    const grantedPermissions = new Set();
+    if (pluginConfig && pluginConfig.permissions) {
+      for (const [perm, state] of Object.entries(pluginConfig.permissions)) {
+        if (state === "granted") grantedPermissions.add(perm);
+      }
+    }
+
+    // Main-process activation via vm context
+    if (manifest.main) {
+      try {
+        const api = createPluginApi(id, manifest, grantedPermissions, this);
+        const scopedConsole = createScopedConsole(id);
+
+        const sandbox = {
+          console: scopedConsole,
+          setTimeout, setInterval, clearTimeout, clearInterval,
+          Promise, JSON, Math, Date,
+          Map, Set, WeakMap, WeakSet,
+          Array, Object, String, Number, Boolean,
+          Error, TypeError, RangeError, SyntaxError, ReferenceError,
+          RegExp, Symbol, Proxy, Reflect,
+          URL, URLSearchParams,
+          TextEncoder, TextDecoder,
+          atob, btoa,
+          wotch: api,
+          module: { exports: {} },
+          exports: {},
+        };
+
+        const context = vm.createContext(sandbox, {
+          name: `plugin:${id}`,
+          codeGeneration: { strings: false, wasm: false },
+        });
+
+        const code = fs.readFileSync(path.join(pluginDir, manifest.main), "utf-8");
+        vm.runInContext(code, context, { filename: manifest.main, timeout: PLUGIN_LIFECYCLE_TIMEOUT });
+
+        const pluginModule = context.module.exports || context.exports;
+        plugin.context = context;
+        plugin.module = pluginModule;
+
+        // Call activate with a 5s timeout
+        if (typeof pluginModule.activate === "function") {
+          await Promise.race([
+            Promise.resolve(pluginModule.activate({
+              pluginPath: pluginDir,
+              manifest,
+              storage: this._createStorage(id),
+              subscriptions: [],
+            })),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Activation timed out")), PLUGIN_LIFECYCLE_TIMEOUT)),
+          ]);
+        }
+      } catch (err) {
+        console.error(`[wotch:plugins] Failed to activate '${id}':`, err.message);
+        plugin.state = "error";
+        plugin.errors = [err.message];
+        return;
+      }
+    }
+
+    // Register theme contributions (declarative, no code needed)
+    if (manifest.contributes && manifest.contributes.themes) {
+      for (const theme of manifest.contributes.themes) {
+        this.registerTheme(id, theme);
+      }
+    }
+
+    plugin.state = "activated";
+    this._savePluginEnabled(id, true);
+    this.errorCounts.set(id, { count: 0, firstError: 0 });
+    console.log(`[wotch:plugins] Activated: ${id}`);
+
+    // Notify renderer of plugin activation
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-status-update", this.getPluginList());
+    }
+  }
+
+  async deactivate(id) {
+    const plugin = this.plugins.get(id);
+    if (!plugin || plugin.state !== "activated") return;
+
+    // Call deactivate with timeout
+    if (plugin.module && typeof plugin.module.deactivate === "function") {
+      try {
+        await Promise.race([
+          Promise.resolve(plugin.module.deactivate()),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Deactivation timed out")), PLUGIN_LIFECYCLE_TIMEOUT)),
+        ]);
+      } catch (err) {
+        console.warn(`[wotch:plugins] Deactivation error for '${id}':`, err.message);
+      }
+    }
+
+    // Remove all contributions
+    for (const [cmdId, cmd] of [...this.commands]) {
+      if (cmd.pluginId === id) this.commands.delete(cmdId);
+    }
+    for (const [detId, det] of [...this.detectors]) {
+      if (det.pluginId === id) this.detectors.delete(detId);
+    }
+    for (const [panelId, panel] of [...this.panels]) {
+      if (panel.pluginId === id) this.panels.delete(panelId);
+    }
+    this.statusListeners = this.statusListeners.filter(l => l.pluginId !== id);
+    this.terminalListeners = this.terminalListeners.filter(l => l.pluginId !== id);
+    this.expansionListeners = this.expansionListeners.filter(l => l.pluginId !== id);
+    for (const key of ["created", "closed", "activated"]) {
+      this.tabListeners[key] = this.tabListeners[key].filter(l => l.pluginId !== id);
+    }
+    for (const [settingId, listeners] of this.settingListeners) {
+      this.settingListeners.set(settingId, listeners.filter(l => l.pluginId !== id));
+    }
+    this.projectListeners = this.projectListeners.filter(l => l.pluginId !== id);
+
+    plugin.context = null;
+    plugin.module = null;
+    plugin.state = "deactivated";
+    this._savePluginEnabled(id, false);
+    console.log(`[wotch:plugins] Deactivated: ${id}`);
+
+    // Notify renderer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-status-update", this.getPluginList());
+    }
+  }
+
+  async deactivateAll() {
+    for (const [id, plugin] of this.plugins) {
+      if (plugin.state === "activated") {
+        await this.deactivate(id);
+      }
+    }
+  }
+
+  getPluginList() {
+    const list = [];
+    for (const [id, plugin] of this.plugins) {
+      const pluginConfig = settings.plugins && settings.plugins[id];
+      list.push({
+        id,
+        displayName: plugin.manifest ? plugin.manifest.displayName : id,
+        description: plugin.manifest ? plugin.manifest.description : "",
+        version: plugin.manifest ? plugin.manifest.version : "?",
+        state: plugin.state,
+        errors: plugin.errors,
+        permissions: plugin.manifest ? (plugin.manifest.permissions || []) : [],
+        grantedPermissions: pluginConfig ? pluginConfig.permissions || {} : {},
+        enabled: pluginConfig ? !!pluginConfig.enabled : false,
+        contributes: plugin.manifest ? (plugin.manifest.contributes || {}) : {},
+      });
+    }
+    return list;
+  }
+
+  // ── Command registration ──
+  registerCommand(pluginId, cmd) {
+    this.commands.set(cmd.id, { pluginId, title: cmd.title, handler: cmd.handler });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-command-registered", { id: cmd.id, title: cmd.title, pluginId });
+    }
+  }
+
+  unregisterCommand(pluginId, commandId) {
+    const cmd = this.commands.get(commandId);
+    if (cmd && cmd.pluginId === pluginId) this.commands.delete(commandId);
+  }
+
+  async executeCommand(commandId) {
+    const cmd = this.commands.get(commandId);
+    if (!cmd) throw new Error(`Unknown command: ${commandId}`);
+    try {
+      await Promise.resolve(cmd.handler());
+    } catch (err) {
+      this._handlePluginError(cmd.pluginId, err);
+    }
+  }
+
+  listCommands() {
+    return [...this.commands.entries()].map(([id, cmd]) => id);
+  }
+
+  // ── Status detector registration ──
+  registerDetector(pluginId, detectorId, callback) {
+    const manifest = this.plugins.get(pluginId)?.manifest;
+    const declared = manifest?.contributes?.statusDetectors?.find(d => d.id === detectorId);
+    const priority = declared ? (declared.priority || 50) : 50;
+    this.detectors.set(detectorId, { pluginId, callback, priority });
+  }
+
+  unregisterDetector(pluginId, detectorId) {
+    const det = this.detectors.get(detectorId);
+    if (det && det.pluginId === pluginId) this.detectors.delete(detectorId);
+  }
+
+  feedTerminalData(tabId, rawData, cleanData) {
+    // Feed plugin status detectors
+    for (const [detId, det] of this.detectors) {
+      try {
+        const result = det.callback({ tabId, rawData, cleanData });
+        if (result && result.state) {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("plugin-status-update", {
+              detectorId: detId, pluginId: det.pluginId,
+              tabId, state: result.state, description: result.description || "",
+            });
+          }
+        }
+      } catch (err) {
+        this._handlePluginError(det.pluginId, err);
+      }
+    }
+
+    // Feed terminal data listeners
+    for (const listener of this.terminalListeners) {
+      try {
+        listener.callback({ tabId, data: rawData });
+      } catch (err) {
+        this._handlePluginError(listener.pluginId, err);
+      }
+    }
+  }
+
+  // ── Panel registration ──
+  registerPanel(pluginId, panel) {
+    this.panels.set(panel.id, { pluginId, title: panel.title, html: panel.html || "", icon: panel.icon, location: panel.location || "sidebar" });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-panel-registered", {
+        id: panel.id, pluginId, title: panel.title, html: panel.html || "", icon: panel.icon, location: panel.location || "sidebar",
+      });
+    }
+  }
+
+  unregisterPanel(pluginId, panelId) {
+    const panel = this.panels.get(panelId);
+    if (panel && panel.pluginId === pluginId) this.panels.delete(panelId);
+  }
+
+  updatePanel(pluginId, panelId, html) {
+    const panel = this.panels.get(panelId);
+    if (panel && panel.pluginId === pluginId) {
+      panel.html = html;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("plugin-panel-registered", { id: panelId, pluginId, title: panel.title, html, icon: panel.icon, location: panel.location });
+      }
+    }
+  }
+
+  postPanelMessage(pluginId, panelId, data) {
+    // Panel messaging handled via renderer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-panel-message", { panelId, pluginId, data });
+    }
+  }
+
+  setPanelVisible(pluginId, panelId, visible) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-panel-visible", { panelId, pluginId, visible });
+    }
+  }
+
+  // ── Theme registration ──
+  registerTheme(pluginId, theme) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-theme-registered", { id: theme.id, name: theme.name, colors: theme.colors, pluginId });
+    }
+  }
+
+  // ── Notification ──
+  showNotification(pluginId, options) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-notification", { pluginId, message: options.message, type: options.type || "info", duration: options.duration || 3000 });
+    }
+  }
+
+  // ── Listeners ──
+  addStatusListener(pluginId, callback) { this.statusListeners.push({ pluginId, callback }); }
+  removeStatusListener(pluginId, callback) { this.statusListeners = this.statusListeners.filter(l => !(l.pluginId === pluginId && l.callback === callback)); }
+  addTerminalListener(pluginId, callback) { this.terminalListeners.push({ pluginId, callback }); }
+  removeTerminalListener(pluginId, callback) { this.terminalListeners = this.terminalListeners.filter(l => !(l.pluginId === pluginId && l.callback === callback)); }
+  addExpansionListener(pluginId, callback) { this.expansionListeners.push({ pluginId, callback }); }
+  removeExpansionListener(pluginId, callback) { this.expansionListeners = this.expansionListeners.filter(l => !(l.pluginId === pluginId && l.callback === callback)); }
+  addTabListener(pluginId, event, callback) { this.tabListeners[event].push({ pluginId, callback }); }
+  removeTabListener(pluginId, event, callback) { this.tabListeners[event] = this.tabListeners[event].filter(l => !(l.pluginId === pluginId && l.callback === callback)); }
+  addSettingListener(pluginId, settingId, callback) {
+    if (!this.settingListeners.has(settingId)) this.settingListeners.set(settingId, []);
+    this.settingListeners.get(settingId).push({ pluginId, callback });
+  }
+  removeSettingListener(pluginId, settingId, callback) {
+    if (this.settingListeners.has(settingId)) {
+      this.settingListeners.set(settingId, this.settingListeners.get(settingId).filter(l => !(l.pluginId === pluginId && l.callback === callback)));
+    }
+  }
+  addProjectListener(pluginId, callback) { this.projectListeners.push({ pluginId, callback }); }
+  removeProjectListener(pluginId, callback) { this.projectListeners = this.projectListeners.filter(l => !(l.pluginId === pluginId && l.callback === callback)); }
+
+  emitStatusChanged(status) {
+    for (const l of this.statusListeners) {
+      try { l.callback(status); } catch (err) { this._handlePluginError(l.pluginId, err); }
+    }
+  }
+
+  emitExpansionChanged(expanded) {
+    for (const l of this.expansionListeners) {
+      try { l.callback(expanded); } catch (err) { this._handlePluginError(l.pluginId, err); }
+    }
+  }
+
+  emitTabEvent(event, data) {
+    for (const l of this.tabListeners[event] || []) {
+      try { l.callback(data); } catch (err) { this._handlePluginError(l.pluginId, err); }
+    }
+  }
+
+  emitSettingChanged(pluginId, settingId, oldValue, newValue) {
+    const listeners = this.settingListeners.get(settingId) || [];
+    for (const l of listeners) {
+      try { l.callback({ id: settingId, oldValue, newValue }); } catch (err) { this._handlePluginError(l.pluginId, err); }
+    }
+  }
+
+  getAllStatuses() {
+    const statuses = [];
+    for (const [tabId, tab] of claudeStatus.tabs) {
+      statuses.push({ tabId, state: tab.state, description: tab.description });
+    }
+    return statuses;
+  }
+
+  getTabStatus(tabId) {
+    const tab = claudeStatus.tabs.get(tabId);
+    return tab ? { tabId, state: tab.state, description: tab.description } : null;
+  }
+
+  // ── Plugin settings persistence ──
+  _savePluginEnabled(id, enabled) {
+    if (!settings.plugins) settings.plugins = {};
+    if (!settings.plugins[id]) settings.plugins[id] = {};
+    settings.plugins[id].enabled = enabled;
+    saveSettings(settings);
+  }
+
+  _createStorage(pluginId) {
+    const storageDir = path.join(PLUGIN_DATA_DIR, pluginId);
+    const storageFile = path.join(storageDir, "storage.json");
+    let cache = null;
+
+    const load = () => {
+      if (cache) return cache;
+      try { cache = JSON.parse(fs.readFileSync(storageFile, "utf-8")); }
+      catch { cache = {}; }
+      return cache;
+    };
+
+    const save = () => {
+      try {
+        fs.mkdirSync(storageDir, { recursive: true });
+        fs.writeFileSync(storageFile, JSON.stringify(cache, null, 2), { mode: 0o600 });
+      } catch (err) { console.error(`[wotch:plugins] Storage save failed for ${pluginId}:`, err.message); }
+    };
+
+    return {
+      get: (key) => Promise.resolve(load()[key]),
+      set: (key, value) => { load()[key] = value; save(); return Promise.resolve(); },
+      delete: (key) => { delete load()[key]; save(); return Promise.resolve(); },
+      keys: () => Promise.resolve(Object.keys(load())),
+    };
+  }
+
+  // ── Error handling ──
+  _handlePluginError(pluginId, err) {
+    console.error(`[wotch:plugin:${pluginId}] Error:`, err.message || err);
+    const counts = this.errorCounts.get(pluginId) || { count: 0, firstError: Date.now() };
+    counts.count++;
+    if (counts.count === 1) counts.firstError = Date.now();
+
+    // Auto-deactivate after 10 errors in 60 seconds
+    if (counts.count >= 10 && (Date.now() - counts.firstError) < 60000) {
+      console.error(`[wotch:plugins] Auto-deactivating '${pluginId}' after ${counts.count} errors`);
+      this.deactivate(pluginId);
+      this.showNotification(pluginId, { message: `Plugin "${pluginId}" was disabled due to repeated errors`, type: "error" });
+    }
+    this.errorCounts.set(pluginId, counts);
+  }
+
+  stop() {
+    if (this.watcher) { this.watcher.close(); this.watcher = null; }
+    if (this._rediscoverTimer) clearTimeout(this._rediscoverTimer);
+  }
+}
+
+const pluginHost = new PluginHost();
+
+// ── Agent SDK Integration ──────────────────────────────────────────
+
+const AGENTS_DIR = path.join(os.homedir(), ".wotch", "agents");
+const AGENT_LOGS_DIR = path.join(os.homedir(), ".wotch", "agent-logs");
+const AGENT_TRUST_FILE = path.join(os.homedir(), ".wotch", "agent-trust.json");
+const BUILTIN_AGENTS_DIR = path.join(__dirname, "agents");
+
+const MAX_AGENT_DEPTH = 3; // Maximum nesting depth for sub-agent spawning
+
+const DANGEROUS_COMMAND_PATTERNS = [
+  /\brm\s+(-[rf]+\s+)?\//, /\bgit\s+push\s+--force/, /\bgit\s+reset\s+--hard/,
+  /\bsudo\b/, /\bchmod\s+777\b/, /\bcurl\b.*\|\s*sh/, /\bwget\b.*\|\s*sh/,
+  /\bdd\s+if=/, /\bmkfs\b/, />\s*\/dev\//, /\brm\s+-rf\s+\./,
+];
+
+const TOOL_DANGER_LEVELS = {
+  "Shell.execute": "write", "Shell.readVisibleTerminal": "read",
+  "FileSystem.readFile": "read", "FileSystem.writeFile": "write",
+  "FileSystem.listFiles": "read", "FileSystem.searchFiles": "read",
+  "FileSystem.deleteFile": "dangerous",
+  "Git.status": "safe", "Git.diff": "read", "Git.log": "read",
+  "Git.checkpoint": "write", "Git.branchInfo": "safe",
+  "Terminal.readBuffer": "read", "Terminal.detectPattern": "read",
+  "Project.list": "safe", "Project.getInfo": "safe",
+  "Wotch.getStatus": "safe", "Wotch.showNotification": "safe",
+  "Agent.spawn": "write",
+};
+
+function loadAgentTrust() {
+  try {
+    if (fs.existsSync(AGENT_TRUST_FILE)) return JSON.parse(fs.readFileSync(AGENT_TRUST_FILE, "utf-8"));
+  } catch { /* fallback */ }
+  return {};
+}
+
+function saveAgentTrust(trust) {
+  try {
+    fs.mkdirSync(path.dirname(AGENT_TRUST_FILE), { recursive: true });
+    fs.writeFileSync(AGENT_TRUST_FILE, JSON.stringify(trust, null, 2), { mode: 0o600 });
+  } catch (err) { console.error("[wotch:agents] Failed to save trust:", err.message); }
+}
+
+function parseAgentYaml(content) {
+  // Simple YAML parser for agent definitions (handles the subset we need)
+  const result = {};
+  let currentKey = null;
+  let multilineValue = "";
+  let inMultiline = false;
+  let indent = 0;
+  const lines = content.split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+
+    if (inMultiline) {
+      const lineIndent = line.length - line.trimStart().length;
+      if (lineIndent > indent || trimmed === "") {
+        multilineValue += (multilineValue ? "\n" : "") + line.slice(indent + 2);
+        continue;
+      } else {
+        result[currentKey] = multilineValue;
+        inMultiline = false;
+      }
+    }
+
+    if (trimmed.startsWith("#") || trimmed === "") continue;
+
+    const match = trimmed.match(/^(\w+)\s*:\s*(.*)/);
+    if (match) {
+      const [, key, rawVal] = match;
+      const val = rawVal.trim();
+
+      if (val === "|" || val === ">") {
+        currentKey = key;
+        multilineValue = "";
+        inMultiline = true;
+        indent = line.length - trimmed.length;
+        continue;
+      }
+
+      if (val.startsWith("[")) {
+        // Inline array
+        try { result[key] = JSON.parse(val); } catch { result[key] = []; }
+      } else if (val.startsWith("-") || val === "") {
+        // Block array — collect items
+        const items = [];
+        for (let j = i + 1; j < lines.length; j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine.startsWith("- ")) {
+            const itemContent = nextLine.slice(2).trim();
+            // Check if it's a simple value or an object
+            if (itemContent.includes(":")) {
+              const obj = {};
+              const parts = itemContent.split(/,\s*/);
+              for (const part of parts) {
+                const [k, ...v] = part.split(":");
+                if (k && v.length) obj[k.trim()] = v.join(":").trim().replace(/^["']|["']$/g, "");
+              }
+              // Check subsequent indented lines for same object
+              for (let k = j + 1; k < lines.length; k++) {
+                const subLine = lines[k];
+                const subTrimmed = subLine.trim();
+                if (subTrimmed && !subTrimmed.startsWith("-") && subTrimmed.includes(":") && (subLine.length - subTrimmed.length) > (lines[j].length - lines[j].trim().length)) {
+                  const [sk, ...sv] = subTrimmed.split(":");
+                  if (sk && sv.length) obj[sk.trim()] = sv.join(":").trim().replace(/^["']|["']$/g, "");
+                  j = k;
+                } else break;
+              }
+              items.push(obj);
+            } else {
+              items.push(itemContent.replace(/^["']|["']$/g, ""));
+            }
+          } else if (nextLine === "" || !nextLine.startsWith(" ")) {
+            break;
+          }
+          i = j;
+        }
+        if (items.length > 0) result[key] = items;
+        else if (val !== "") result[key] = val;
+      } else if (val === "true") result[key] = true;
+      else if (val === "false") result[key] = false;
+      else if (/^\d+$/.test(val)) result[key] = parseInt(val, 10);
+      else if (/^\d+\.\d+$/.test(val)) result[key] = parseFloat(val);
+      else result[key] = val.replace(/^["']|["']$/g, "");
+    }
+  }
+  if (inMultiline) result[currentKey] = multilineValue;
+  return result;
+}
+
+function validateAgentDef(def) {
+  const errors = [];
+  if (!def.name || typeof def.name !== "string") errors.push("Missing 'name'");
+  if (!def.description) errors.push("Missing 'description'");
+  if (!def.systemPrompt) errors.push("Missing 'systemPrompt'");
+  if (!def.tools || !Array.isArray(def.tools) || def.tools.length === 0) errors.push("Missing or empty 'tools'");
+  if (def.maxTurns && (def.maxTurns < 1 || def.maxTurns > 50)) errors.push("maxTurns must be 1-50");
+  if (def.approvalMode && !["suggest-only", "ask-first", "auto-execute"].includes(def.approvalMode)) {
+    errors.push("Invalid approvalMode");
+  }
+  return errors;
+}
+
+function renderSystemPrompt(template, context) {
+  return template
+    .replace(/\{\{projectName\}\}/g, context.projectName || "unknown")
+    .replace(/\{\{projectPath\}\}/g, context.projectPath || "")
+    .replace(/\{\{branch\}\}/g, context.branch || "main")
+    .replace(/\{\{platform\}\}/g, IS_WIN ? "Windows" : IS_MAC ? "macOS" : "Linux")
+    .replace(/\{\{date\}\}/g, new Date().toISOString().split("T")[0]);
+}
+
+// ── Agent Tool Implementations ──
+function createAgentTools(context) {
+  const projectPath = context.projectPath || "";
+  function ensureInProject(p) {
+    const resolved = path.resolve(projectPath, p);
+    if (!resolved.startsWith(path.resolve(projectPath))) throw new Error("Path outside project directory");
+    return resolved;
+  }
+
+  return {
+    "Shell.execute": async (input) => {
+      const { command, cwd, timeoutMs = 30000 } = input;
+      const workDir = cwd ? ensureInProject(cwd) : projectPath;
+      return new Promise((resolve) => {
+        let stdout = "";
+        let timedOut = false;
+        const startTime = Date.now();
+        const shell = IS_WIN ? "cmd.exe" : (process.env.SHELL || "/bin/bash");
+        const shellFlag = IS_WIN ? "/c" : "-c";
+        const proc = pty.spawn(shell, [shellFlag, command], {
+          name: "xterm-256color", cols: 120, rows: 40, cwd: workDir,
+          env: { ...process.env, TERM: "xterm-256color" },
+        });
+        const timer = setTimeout(() => { timedOut = true; proc.kill(); }, Math.min(timeoutMs, 120000));
+        proc.onData((data) => {
+          stdout += claudeStatus.stripAnsi(data);
+          if (stdout.length > 102400) { stdout = stdout.slice(0, 102400) + "\n[truncated]"; proc.kill(); }
+        });
+        proc.onExit(({ exitCode }) => {
+          clearTimeout(timer);
+          resolve({ exitCode: exitCode || 0, stdout, stderr: "", timedOut, durationMs: Date.now() - startTime });
+        });
+      });
+    },
+
+    "Shell.readVisibleTerminal": async (input) => {
+      const tabId = input.tabId || [...ptyProcesses.keys()][0];
+      return { content: `(terminal buffer for ${tabId})` };
+    },
+
+    "FileSystem.readFile": async (input) => {
+      const filePath = ensureInProject(input.path);
+      const content = await fs.promises.readFile(filePath, "utf-8");
+      if (content.length > 1048576) return { content: content.slice(0, 1048576) + "\n[truncated at 1MB]" };
+      return { content };
+    },
+
+    "FileSystem.writeFile": async (input) => {
+      const filePath = ensureInProject(input.path);
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.promises.writeFile(filePath, input.content, { mode: 0o644 });
+      return { success: true, path: input.path };
+    },
+
+    "FileSystem.listFiles": async (input) => {
+      const dirPath = ensureInProject(input.path || ".");
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      return { files: entries.map(e => ({ name: e.name, isDirectory: e.isDirectory() })) };
+    },
+
+    "FileSystem.searchFiles": async (input) => {
+      const searchDir = ensureInProject(input.path || ".");
+      try {
+        const result = execFileSync("grep", ["-rn", "--include=*.{js,ts,py,java,go,rs,c,cpp,h,yaml,yml,json,md}", "-l", input.pattern, searchDir], {
+          encoding: "utf-8", timeout: 15000, maxBuffer: 1048576,
+        });
+        return { files: result.trim().split("\n").filter(Boolean).slice(0, 50) };
+      } catch { return { files: [] }; }
+    },
+
+    "FileSystem.deleteFile": async (input) => {
+      const filePath = ensureInProject(input.path);
+      await fs.promises.unlink(filePath);
+      return { success: true, path: input.path };
+    },
+
+    "Git.status": async () => {
+      if (!projectPath) return { branch: "", changedFiles: 0, isGitRepo: false };
+      return gitGetStatus(projectPath);
+    },
+
+    "Git.diff": async (input) => {
+      try {
+        const args = ["diff"];
+        if (input?.mode === "staged") args.push("--cached");
+        const diff = execFileSync("git", args, { cwd: projectPath, encoding: "utf-8", timeout: 10000, maxBuffer: 1048576 }) || "";
+        return { diff };
+      } catch (err) { return { diff: `Error: ${err.message}` }; }
+    },
+
+    "Git.log": async (input) => {
+      try {
+        const count = input?.count || 10;
+        const raw = execFileSync("git", ["log", `--max-count=${count}`, "--format=%H|||%s|||%an|||%aI"], {
+          cwd: projectPath, encoding: "utf-8", timeout: 10000,
+        });
+        return { commits: raw.trim().split("\n").filter(Boolean).map(l => {
+          const [hash, message, author, date] = l.split("|||");
+          return { hash, message, author, date };
+        })};
+      } catch { return { commits: [] }; }
+    },
+
+    "Git.checkpoint": async (input) => {
+      return gitCheckpoint(projectPath, input?.message);
+    },
+
+    "Git.branchInfo": async () => {
+      try {
+        const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectPath, encoding: "utf-8", timeout: 5000 }).trim();
+        return { branch };
+      } catch { return { branch: "" }; }
+    },
+
+    "Terminal.readBuffer": async (input) => {
+      // Request buffer from renderer
+      if (!mainWindow || mainWindow.isDestroyed()) return { content: "(window not available)" };
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve({ content: "(timeout)" }), 3000);
+        const handler = (_e, data) => { clearTimeout(timeout); ipcMain.removeHandler("_agent-terminal-buffer-response"); resolve({ content: data.buffer || "" }); };
+        ipcMain.handleOnce("_agent-terminal-buffer-response", handler);
+        mainWindow.webContents.send("terminal-buffer-read", { lines: input?.lines || 200, requestId: "agent" });
+      });
+    },
+
+    "Terminal.detectPattern": async (input) => {
+      return { matched: false, message: "Pattern detection requires active monitoring (not implemented in v1)" };
+    },
+
+    "Project.list": async () => {
+      return { projects: [...knownProjectPaths].map(p => ({ path: p, name: path.basename(p) })) };
+    },
+
+    "Project.getInfo": async () => {
+      const pp = projectPath || [...knownProjectPaths][0] || "";
+      return { path: pp, name: path.basename(pp), platform: IS_WIN ? "win32" : IS_MAC ? "darwin" : "linux" };
+    },
+
+    "Wotch.getStatus": async () => {
+      const aggregate = claudeStatus.getAggregateStatus();
+      return { state: aggregate.state, description: aggregate.description };
+    },
+
+    "Wotch.showNotification": async (input) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("plugin-notification", { pluginId: "agent", message: input.message, type: input.type || "info", duration: 3000 });
+      }
+      return { success: true };
+    },
+
+    "Agent.spawn": async (input) => {
+      // Sub-agent spawning — delegates to agentManager with parent tracking
+      const { agentId, task: subTask } = input;
+      if (!agentId) throw new Error("agentId is required");
+      if (!subTask) throw new Error("task is required");
+      if (agentId === context._currentAgentId) throw new Error("Agent cannot spawn itself");
+      const depth = (context._agentDepth || 0) + 1;
+      if (depth > MAX_AGENT_DEPTH) throw new Error(`Maximum agent nesting depth (${MAX_AGENT_DEPTH}) exceeded`);
+      const result = await agentManager.startAgent(agentId, {
+        task: subTask,
+        projectPath: context.projectPath,
+        _parentRunId: context._currentRunId,
+        _agentDepth: depth,
+      });
+      return { runId: result.runId, agentId, status: "started" };
+    },
+  };
+}
+
+function getToolSchemas() {
+  return [
+    { name: "Shell.execute", description: "Execute a shell command", input_schema: { type: "object", properties: { command: { type: "string", description: "Shell command to execute" }, cwd: { type: "string", description: "Working directory (relative to project)" }, timeoutMs: { type: "number", description: "Timeout in ms (default 30000, max 120000)" } }, required: ["command"] } },
+    { name: "FileSystem.readFile", description: "Read a file", input_schema: { type: "object", properties: { path: { type: "string", description: "File path relative to project root" } }, required: ["path"] } },
+    { name: "FileSystem.writeFile", description: "Write content to a file", input_schema: { type: "object", properties: { path: { type: "string", description: "File path relative to project root" }, content: { type: "string", description: "File content" } }, required: ["path", "content"] } },
+    { name: "FileSystem.listFiles", description: "List directory contents", input_schema: { type: "object", properties: { path: { type: "string", description: "Directory path (default: project root)" } } } },
+    { name: "FileSystem.searchFiles", description: "Search file contents with regex", input_schema: { type: "object", properties: { pattern: { type: "string", description: "Search pattern (regex)" }, path: { type: "string", description: "Directory to search" } }, required: ["pattern"] } },
+    { name: "FileSystem.deleteFile", description: "Delete a file (dangerous)", input_schema: { type: "object", properties: { path: { type: "string", description: "File path to delete" } }, required: ["path"] } },
+    { name: "Git.status", description: "Get git repository status", input_schema: { type: "object", properties: {} } },
+    { name: "Git.diff", description: "Get git diff", input_schema: { type: "object", properties: { mode: { type: "string", enum: ["staged", "unstaged", "all"], description: "Diff mode" } } } },
+    { name: "Git.log", description: "Get recent commit log", input_schema: { type: "object", properties: { count: { type: "number", description: "Number of commits (default 10)" } } } },
+    { name: "Git.checkpoint", description: "Create a Wotch checkpoint", input_schema: { type: "object", properties: { message: { type: "string", description: "Checkpoint message" } } } },
+    { name: "Git.branchInfo", description: "Get current branch name", input_schema: { type: "object", properties: {} } },
+    { name: "Terminal.readBuffer", description: "Read recent terminal output", input_schema: { type: "object", properties: { lines: { type: "number", description: "Lines to read (default 200, max 500)" } } } },
+    { name: "Terminal.detectPattern", description: "Wait for pattern in terminal output", input_schema: { type: "object", properties: { pattern: { type: "string", description: "Regex pattern to detect" }, timeoutMs: { type: "number", description: "Timeout in ms" } }, required: ["pattern"] } },
+    { name: "Project.list", description: "List all detected projects", input_schema: { type: "object", properties: {} } },
+    { name: "Project.getInfo", description: "Get current project information", input_schema: { type: "object", properties: {} } },
+    { name: "Wotch.getStatus", description: "Get Claude Code status", input_schema: { type: "object", properties: {} } },
+    { name: "Wotch.showNotification", description: "Show a notification", input_schema: { type: "object", properties: { message: { type: "string", description: "Notification message" }, type: { type: "string", enum: ["info", "success", "error"] } }, required: ["message"] } },
+    { name: "Agent.spawn", description: "Spawn a sub-agent to handle a subtask", input_schema: { type: "object", properties: { agentId: { type: "string", description: "Agent ID to spawn" }, task: { type: "string", description: "Task description for the sub-agent" } }, required: ["agentId", "task"] } },
+  ];
+}
+
+class AgentRuntime {
+  constructor(agentDef, apiKey, tools, trustMode, onEvent, opts = {}) {
+    this.agent = agentDef;
+    this.apiKey = apiKey;
+    this.tools = tools;
+    this.trustMode = trustMode;
+    this.onEvent = onEvent;
+    this.runId = crypto.randomUUID();
+    this.messages = [];
+    this.iteration = 0;
+    this.cancelled = false;
+    this.state = "idle";
+    this.pendingApprovals = new Map();
+    this.logEntries = [];
+    this.parentRunId = opts.parentRunId || null;
+    this.depth = opts.depth || 0;
+    this.childRunIds = [];
+  }
+
+  async run(task, context) {
+    this.state = "running";
+    const systemPrompt = renderSystemPrompt(this.agent.systemPrompt, context);
+    this.messages = [{ role: "user", content: task }];
+    const maxTurns = this.agent.maxTurns || 10;
+
+    this.onEvent({ runId: this.runId, type: "started", data: { agentId: this.agent.name, agentName: this.agent.displayName || this.agent.name, context } });
+    this._log("agent-start", { agentId: this.agent.name, task });
+
+    // Filter tool schemas for this agent
+    const allSchemas = getToolSchemas();
+    const agentToolNames = new Set();
+    for (const t of (this.agent.tools || [])) {
+      if (t.endsWith(".*")) {
+        const category = t.slice(0, -2);
+        for (const s of allSchemas) { if (s.name.startsWith(category + ".")) agentToolNames.add(s.name); }
+      } else {
+        agentToolNames.add(t);
+      }
+    }
+    const toolDefs = allSchemas.filter(s => agentToolNames.has(s.name));
+
+    try {
+      const Anthropic = require("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: this.apiKey });
+
+      while (this.iteration < maxTurns && !this.cancelled) {
+        this.iteration++;
+        this.onEvent({ runId: this.runId, type: "reasoning", data: { text: `Turn ${this.iteration}/${maxTurns}...` } });
+
+        const response = await client.messages.create({
+          model: this.agent.model || "claude-sonnet-4-6-20250514",
+          system: systemPrompt,
+          messages: this.messages,
+          tools: toolDefs,
+          max_tokens: 4096,
+        });
+
+        this.messages.push({ role: "assistant", content: response.content });
+
+        // Extract text and tool_use blocks
+        const textBlocks = response.content.filter(b => b.type === "text");
+        const toolUses = response.content.filter(b => b.type === "tool_use");
+
+        // Stream reasoning text
+        for (const block of textBlocks) {
+          this.onEvent({ runId: this.runId, type: "reasoning", data: { text: block.text } });
+        }
+
+        if (toolUses.length === 0) {
+          // Agent is done
+          const resultText = textBlocks.map(b => b.text).join("");
+          this.state = "completed";
+          this.onEvent({ runId: this.runId, type: "completed", data: { summary: resultText, turnsUsed: this.iteration } });
+          this._log("agent-complete", { turnsUsed: this.iteration });
+          this._flushLog();
+          return resultText;
+        }
+
+        // Execute tool calls
+        const toolResults = [];
+        for (const toolUse of toolUses) {
+          if (this.cancelled) break;
+
+          this.onEvent({ runId: this.runId, type: "tool-call", data: { tool: toolUse.name, input: toolUse.input } });
+
+          // Check approval
+          const needsApproval = this._needsApproval(toolUse.name, toolUse.input);
+          if (needsApproval) {
+            this.state = "waiting-approval";
+            const actionId = crypto.randomUUID();
+            const decision = await this._requestApproval(actionId, toolUse.name, toolUse.input);
+
+            if (decision === "reject" || decision === "stop") {
+              this._log("approval-response", { actionId, decision });
+              if (decision === "stop") { this.cancelled = true; break; }
+              toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: "User rejected this action", is_error: true });
+              this.state = "running";
+              continue;
+            }
+            this.state = "running";
+            this._log("approval-response", { actionId, decision: "approve" });
+          }
+
+          // Execute the tool
+          const startTime = Date.now();
+          try {
+            const toolFn = this.tools[toolUse.name];
+            if (!toolFn) throw new Error(`Unknown tool: ${toolUse.name}`);
+            const result = await toolFn(toolUse.input);
+            const output = typeof result === "string" ? result : JSON.stringify(result);
+            toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: output });
+            // Sanitize input before sending to renderer — strip large content and potential secrets
+            const safeInput = { ...toolUse.input };
+            if (safeInput.content && safeInput.content.length > 500) safeInput.content = safeInput.content.slice(0, 500) + "...[truncated]";
+            if (safeInput.password) safeInput.password = "***";
+            if (safeInput.apiKey) safeInput.apiKey = "***";
+            if (safeInput.token) safeInput.token = "***";
+            this.onEvent({ runId: this.runId, type: "tool-result", data: { tool: toolUse.name, input: safeInput, output, durationMs: Date.now() - startTime } });
+            this._log("tool-call", { tool: toolUse.name, input: toolUse.input, output: output.slice(0, 500), durationMs: Date.now() - startTime });
+          } catch (err) {
+            const errMsg = `Error: ${err.message}`;
+            toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: errMsg, is_error: true });
+            this.onEvent({ runId: this.runId, type: "error", data: { message: err.message } });
+            this._log("error", { tool: toolUse.name, error: err.message });
+          }
+        }
+
+        if (this.cancelled) break;
+        this.messages.push({ role: "user", content: toolResults });
+      }
+    } catch (err) {
+      this.state = "failed";
+      this.onEvent({ runId: this.runId, type: "error", data: { message: err.message } });
+      this._log("error", { error: err.message });
+      this._flushLog();
+      return `Agent failed: ${err.message}`;
+    }
+
+    if (this.cancelled) {
+      this.state = "stopped";
+      this.onEvent({ runId: this.runId, type: "stopped", data: { reason: "cancelled" } });
+      this._log("agent-stop", { reason: "cancelled" });
+    } else {
+      this.state = "completed";
+      this.onEvent({ runId: this.runId, type: "completed", data: { summary: "Reached maximum iterations", turnsUsed: this.iteration } });
+      this._log("agent-complete", { turnsUsed: this.iteration, reason: "max-turns" });
+    }
+    this._flushLog();
+    return this.cancelled ? "Agent stopped" : "Agent reached maximum iterations";
+  }
+
+  stop() {
+    this.cancelled = true;
+    // Resolve any pending approvals as rejected
+    for (const [, resolver] of this.pendingApprovals) {
+      resolver("stop");
+    }
+    this.pendingApprovals.clear();
+    // Stop child agents recursively (regardless of state)
+    for (const childRunId of this.childRunIds) {
+      const childRuntime = agentManager.runs.get(childRunId);
+      if (childRuntime) childRuntime.stop();
+    }
+  }
+
+  _needsApproval(toolName, toolInput) {
+    const dangerLevel = TOOL_DANGER_LEVELS[toolName] || "write";
+
+    // Dangerous actions always need approval
+    if (dangerLevel === "dangerous") return true;
+
+    // Check for dangerous command patterns in Shell.execute
+    if (toolName === "Shell.execute" && toolInput.command) {
+      for (const pattern of DANGEROUS_COMMAND_PATTERNS) {
+        if (pattern.test(toolInput.command)) return true;
+      }
+    }
+
+    // Approval based on trust mode
+    switch (this.trustMode) {
+      case "suggest-only": return true; // Everything needs approval
+      case "ask-first": return dangerLevel === "write" || dangerLevel === "dangerous";
+      case "auto-execute": return dangerLevel === "dangerous";
+      default: return true;
+    }
+  }
+
+  async _requestApproval(actionId, toolName, toolInput) {
+    this.onEvent({
+      runId: this.runId, type: "approval-waiting",
+      data: { actionId, tool: toolName, input: toolInput },
+    });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("agent-approval-request", {
+        runId: this.runId, actionId, agentName: this.agent.displayName || this.agent.name,
+        tool: toolName, input: toolInput,
+      });
+    }
+    return new Promise((resolve) => {
+      this.pendingApprovals.set(actionId, resolve);
+      // Timeout: auto-reject after approval timeout
+      setTimeout(() => {
+        if (this.pendingApprovals.has(actionId)) {
+          this.pendingApprovals.delete(actionId);
+          resolve("reject");
+        }
+      }, settings.agentSettings?.approvalTimeoutMs || 300000);
+    });
+  }
+
+  resolveApproval(actionId, decision) {
+    const resolver = this.pendingApprovals.get(actionId);
+    if (resolver) {
+      this.pendingApprovals.delete(actionId);
+      resolver(decision);
+    }
+  }
+
+  _log(type, data) {
+    this.logEntries.push({ timestamp: new Date().toISOString(), runId: this.runId, agentId: this.agent.name, type, ...data });
+  }
+
+  _flushLog() {
+    try {
+      const logDir = path.join(AGENT_LOGS_DIR, this.agent.name);
+      fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, `${this.runId}.jsonl`);
+      const content = this.logEntries.map(e => JSON.stringify(e)).join("\n") + "\n";
+      fs.writeFileSync(logFile, content, { mode: 0o600 });
+    } catch (err) {
+      console.error("[wotch:agents] Failed to flush log:", err.message);
+    }
+  }
+}
+
+class AgentManager {
+  constructor() {
+    this.agents = new Map();     // agentId → agent definition
+    this.runs = new Map();       // runId → AgentRuntime
+    this.trust = loadAgentTrust();
+    this.watcher = null;
+    this.triggerDebounce = new Map(); // agentId → lastTriggerTime
+  }
+
+  async init() {
+    try { fs.mkdirSync(AGENTS_DIR, { recursive: true }); } catch { /* ok */ }
+    try { fs.mkdirSync(AGENT_LOGS_DIR, { recursive: true }); } catch { /* ok */ }
+
+    // Discover agents
+    this._discoverAgents();
+
+    // Watch for changes
+    try {
+      this.watcher = fs.watch(AGENTS_DIR, { persistent: false }, () => {
+        if (this._rediscoverTimer) clearTimeout(this._rediscoverTimer);
+        this._rediscoverTimer = setTimeout(() => {
+          this._discoverAgents();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("agent-list-changed", { agents: this.getAgentList() });
+          }
+        }, 1000);
+      });
+    } catch { /* ok */ }
+
+    // Prune old logs on startup
+    this._pruneLogs();
+
+    console.log(`[wotch:agents] Initialized, ${this.agents.size} agents discovered`);
+  }
+
+  _discoverAgents() {
+    // Built-in agents (from src/agents/)
+    this._scanDir(BUILTIN_AGENTS_DIR, "built-in");
+    // User agents (from ~/.wotch/agents/)
+    this._scanDir(AGENTS_DIR, "user");
+  }
+
+  _scanDir(dir, source) {
+    try {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml") || f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const filePath = path.join(dir, file);
+          const content = fs.readFileSync(filePath, "utf-8");
+          let def;
+          if (file.endsWith(".json")) {
+            def = JSON.parse(content);
+          } else {
+            def = parseAgentYaml(content);
+          }
+          const errors = validateAgentDef(def);
+          if (errors.length > 0) {
+            console.warn(`[wotch:agents] Invalid agent '${file}':`, errors);
+            continue;
+          }
+          def._source = source;
+          def._filePath = filePath;
+          // User agents override built-in with same name
+          if (source === "user" || !this.agents.has(def.name)) {
+            this.agents.set(def.name, def);
+            console.log(`[wotch:agents] Discovered: ${def.name} (${source})`);
+          }
+        } catch (err) {
+          console.warn(`[wotch:agents] Failed to parse '${file}':`, err.message);
+        }
+      }
+    } catch { /* dir doesn't exist yet */ }
+  }
+
+  getAgentList() {
+    const list = [];
+    for (const [id, def] of this.agents) {
+      const trustInfo = this.trust[id] || {};
+      list.push({
+        id, displayName: def.displayName || def.name, description: def.description,
+        version: def.version || "1.0.0", model: def.model || "claude-sonnet-4-6-20250514",
+        tools: def.tools || [], triggers: def.triggers || [{ type: "manual" }],
+        approvalMode: trustInfo.mode || def.approvalMode || settings.agentSettings?.defaultApprovalMode || "ask-first",
+        source: def._source, maxTurns: def.maxTurns || 10,
+        runCount: trustInfo.runCount || 0,
+      });
+    }
+    return list;
+  }
+
+  async startAgent(agentId, context = {}) {
+    if (!settings.agentSettings?.enabled) throw new Error("Agent system is disabled");
+
+    const def = this.agents.get(agentId);
+    if (!def) throw new Error(`Unknown agent: ${agentId}`);
+
+    // Check concurrent limit
+    const running = [...this.runs.values()].filter(r => r.state === "running" || r.state === "waiting-approval");
+    if (running.length >= (settings.agentSettings?.maxConcurrentAgents || 3)) {
+      throw new Error("Maximum concurrent agents reached");
+    }
+
+    // Get API key from credential manager
+    const apiKey = credentialManager.getKey();
+    if (!apiKey) throw new Error("No API key configured. Set your Anthropic API key in Settings > Claude API.");
+
+    // Get project context
+    const projectPath = context.projectPath || [...knownProjectPaths][0] || "";
+    const agentContext = {
+      projectPath,
+      projectName: projectPath ? path.basename(projectPath) : "unknown",
+      branch: "",
+    };
+    try {
+      agentContext.branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectPath, encoding: "utf-8", timeout: 5000 }).trim();
+    } catch { /* ok */ }
+
+    // Track depth and parent info for sub-agent spawning
+    const parentRunId = context._parentRunId || null;
+    const agentDepth = context._agentDepth || 0;
+
+    // Create tools — pass depth and runId into context for Agent.spawn
+    const toolContext = { ...agentContext, _agentDepth: agentDepth };
+    const tools = createAgentTools(toolContext);
+
+    // Get trust mode
+    const trustInfo = this.trust[agentId] || {};
+    const trustMode = trustInfo.mode || def.approvalMode || settings.agentSettings?.defaultApprovalMode || "ask-first";
+
+    // Create runtime
+    const runtime = new AgentRuntime(def, apiKey, tools, trustMode, (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("agent-event", { ...event, timestamp: Date.now(), parentRunId, depth: agentDepth });
+      }
+    }, { parentRunId, depth: agentDepth });
+
+    // Set runId into tool context so Agent.spawn can track parent
+    toolContext._currentRunId = runtime.runId;
+    toolContext._currentAgentId = agentId;
+
+    // Add to runs map first, then register parent-child
+    // (ensures child is findable when parent.stop() cascades)
+    this.runs.set(runtime.runId, runtime);
+    if (parentRunId) {
+      const parentRuntime = this.runs.get(parentRunId);
+      if (parentRuntime) parentRuntime.childRunIds.push(runtime.runId);
+    }
+
+    // Update trust run count
+    if (!this.trust[agentId]) this.trust[agentId] = { mode: trustMode, runCount: 0, rejectionCount: 0, emergencyStopCount: 0 };
+    this.trust[agentId].runCount++;
+    this.trust[agentId].lastRun = new Date().toISOString();
+    saveAgentTrust(this.trust);
+
+    // Run async (don't await — it runs in the background)
+    const task = context.task || "Please help with this task.";
+    runtime.run(task, agentContext).catch(err => {
+      console.error(`[wotch:agents] Agent '${agentId}' failed:`, err.message);
+    }).finally(() => {
+      // Clean up after completion
+      setTimeout(() => this.runs.delete(runtime.runId), 60000); // Keep for 1 min after done
+    });
+
+    return { runId: runtime.runId };
+  }
+
+  async stopAgent(runId) {
+    const runtime = this.runs.get(runId);
+    if (!runtime) return { success: false };
+    runtime.stop();
+    return { success: true };
+  }
+
+  async emergencyStopAll() {
+    for (const [, runtime] of this.runs) {
+      runtime.stop();
+    }
+    // Demote trust for all running agents
+    for (const [, runtime] of this.runs) {
+      const agentId = runtime.agent.name;
+      if (this.trust[agentId]) {
+        const current = this.trust[agentId].mode;
+        if (current === "auto-execute") this.trust[agentId].mode = "ask-first";
+        else if (current === "ask-first") this.trust[agentId].mode = "suggest-only";
+        this.trust[agentId].emergencyStopCount = (this.trust[agentId].emergencyStopCount || 0) + 1;
+      }
+    }
+    saveAgentTrust(this.trust);
+    return { success: true };
+  }
+
+  approveAction(runId, actionId, decision) {
+    const runtime = this.runs.get(runId);
+    if (!runtime) return { success: false };
+    runtime.resolveApproval(actionId, decision);
+    return { success: true };
+  }
+
+  getRunningAgents() {
+    const list = [];
+    for (const [runId, runtime] of this.runs) {
+      list.push({
+        runId, agentId: runtime.agent.name, agentName: runtime.agent.displayName || runtime.agent.name,
+        state: runtime.state, iteration: runtime.iteration, maxTurns: runtime.agent.maxTurns || 10,
+        parentRunId: runtime.parentRunId, depth: runtime.depth, childRunIds: runtime.childRunIds,
+      });
+    }
+    return list;
+  }
+
+  checkTriggers(tabId, terminalCleanData) {
+    if (!settings.agentSettings?.autoTriggerEnabled) return;
+    for (const [agentId, def] of this.agents) {
+      if (!def.triggers) continue;
+      for (const trigger of def.triggers) {
+        if (trigger.type === "onError" || (trigger.type === "onStatusChange" && trigger.to === "error")) {
+          // Check debounce
+          const lastTrigger = this.triggerDebounce.get(agentId) || 0;
+          const debounceMs = trigger.debounceMs || 5000;
+          if (Date.now() - lastTrigger < debounceMs) continue;
+
+          // Check if terminal has error patterns
+          const hasError = /error|Error|ERROR|FAIL|fail|Exception|exception|Traceback|panic/.test(terminalCleanData);
+          if (hasError) {
+            this.triggerDebounce.set(agentId, Date.now());
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("agent-suggestion", {
+                agentId, agentName: def.displayName || def.name,
+                trigger: trigger.type === "onError" ? "Terminal error detected" : `Status changed to ${trigger.to}`,
+                tabId,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  _pruneLogs() {
+    try {
+      const maxAge = (settings.agentSettings?.logRetentionDays || 30) * 86400000;
+      const now = Date.now();
+      const agentDirs = fs.readdirSync(AGENT_LOGS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+      for (const dir of agentDirs) {
+        const logDir = path.join(AGENT_LOGS_DIR, dir.name);
+        const files = fs.readdirSync(logDir);
+        for (const file of files) {
+          const filePath = path.join(logDir, file);
+          const stat = fs.statSync(filePath);
+          if (now - stat.mtimeMs > maxAge) fs.unlinkSync(filePath);
+        }
+      }
+    } catch { /* ok */ }
+  }
+
+  stop() {
+    if (this.watcher) { this.watcher.close(); this.watcher = null; }
+    if (this._rediscoverTimer) clearTimeout(this._rediscoverTimer);
+    for (const [, runtime] of this.runs) runtime.stop();
+  }
+}
+
+const agentManager = new AgentManager();
 
 // ── Integration Manager ────────────────────────────────────────────
 const integrationManager = new ClaudeIntegrationManager({
@@ -2451,8 +4211,10 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
 
 ipcMain.handle("reset-settings", () => {
   const preservedProfiles = settings.sshProfiles;
+  const preservedPlugins = settings.plugins;
   settings = { ...DEFAULT_SETTINGS };
   settings.sshProfiles = preservedProfiles;
+  settings.plugins = preservedPlugins;
   saveSettings(settings);
   isPinned = false;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2461,6 +4223,103 @@ ipcMain.handle("reset-settings", () => {
     mainWindow.webContents.send("position-changed", settings.position || "top");
   }
   return { ...settings };
+});
+
+// ── Plugin IPC handlers ──────────────────────────────────────────
+ipcMain.handle("plugin-list", () => pluginHost.getPluginList());
+
+ipcMain.handle("plugin-enable", async (_event, { pluginId }) => {
+  await pluginHost.activate(pluginId);
+  return pluginHost.getPluginList();
+});
+
+ipcMain.handle("plugin-disable", async (_event, { pluginId }) => {
+  await pluginHost.deactivate(pluginId);
+  return pluginHost.getPluginList();
+});
+
+ipcMain.handle("plugin-execute-command", async (_event, { commandId }) => {
+  await pluginHost.executeCommand(commandId);
+});
+
+ipcMain.handle("plugin-get-settings", (_event, { pluginId }) => {
+  const plugin = pluginHost.plugins.get(pluginId);
+  if (!plugin || !plugin.manifest) return [];
+  const declaredSettings = plugin.manifest.contributes?.settings || [];
+  const stored = (settings.plugins?.[pluginId]?.settings) || {};
+  return declaredSettings.map(s => ({
+    ...s,
+    value: s.id in stored ? stored[s.id] : s.default,
+  }));
+});
+
+ipcMain.handle("plugin-save-setting", (_event, { pluginId, settingId, value }) => {
+  if (!settings.plugins) settings.plugins = {};
+  if (!settings.plugins[pluginId]) settings.plugins[pluginId] = {};
+  if (!settings.plugins[pluginId].settings) settings.plugins[pluginId].settings = {};
+  settings.plugins[pluginId].settings[settingId] = value;
+  saveSettings(settings);
+});
+
+ipcMain.handle("plugin-get-permissions", (_event, { pluginId }) => {
+  const plugin = pluginHost.plugins.get(pluginId);
+  if (!plugin || !plugin.manifest) return { requested: [], granted: {} };
+  return {
+    requested: plugin.manifest.permissions || [],
+    granted: settings.plugins?.[pluginId]?.permissions || {},
+  };
+});
+
+ipcMain.handle("plugin-grant-permission", (_event, { pluginId, permission }) => {
+  if (!settings.plugins) settings.plugins = {};
+  if (!settings.plugins[pluginId]) settings.plugins[pluginId] = {};
+  if (!settings.plugins[pluginId].permissions) settings.plugins[pluginId].permissions = {};
+  settings.plugins[pluginId].permissions[permission] = "granted";
+  saveSettings(settings);
+  return settings.plugins[pluginId].permissions;
+});
+
+ipcMain.handle("plugin-revoke-permission", async (_event, { pluginId, permission }) => {
+  if (!settings.plugins) settings.plugins = {};
+  if (!settings.plugins[pluginId]) settings.plugins[pluginId] = {};
+  if (!settings.plugins[pluginId].permissions) settings.plugins[pluginId].permissions = {};
+  settings.plugins[pluginId].permissions[permission] = "denied";
+  saveSettings(settings);
+  // Deactivate and reactivate to apply new permission set
+  const plugin = pluginHost.plugins.get(pluginId);
+  if (plugin && plugin.state === "activated") {
+    await pluginHost.deactivate(pluginId);
+    await pluginHost.activate(pluginId);
+  }
+  return settings.plugins[pluginId].permissions;
+});
+
+// ── Agent IPC handlers ──────────────────────────────────────────
+ipcMain.handle("agent-list", () => agentManager.getAgentList());
+ipcMain.handle("agent-start", async (_event, { agentId, context }) => agentManager.startAgent(agentId, context));
+ipcMain.handle("agent-stop", async (_event, { runId }) => agentManager.stopAgent(runId));
+ipcMain.handle("agent-approve", (_event, { runId, actionId, decision }) => agentManager.approveAction(runId, actionId, decision || "approve"));
+ipcMain.handle("agent-reject", (_event, { runId, actionId, reason }) => agentManager.approveAction(runId, actionId, "reject"));
+ipcMain.handle("agent-runs", () => agentManager.getRunningAgents());
+ipcMain.handle("agent-get-trust", (_event, { agentId }) => {
+  const trust = agentManager.trust[agentId] || {};
+  return { mode: trust.mode || "ask-first", runCount: trust.runCount || 0, rejectionCount: trust.rejectionCount || 0 };
+});
+ipcMain.handle("agent-set-trust", (_event, { agentId, mode }) => {
+  if (!agentManager.trust[agentId]) agentManager.trust[agentId] = { runCount: 0, rejectionCount: 0, emergencyStopCount: 0 };
+  agentManager.trust[agentId].mode = mode;
+  saveAgentTrust(agentManager.trust);
+  return { success: true };
+});
+ipcMain.handle("agent-tree", () => {
+  const runs = agentManager.getRunningAgents();
+  // Build tree: root nodes are those with no parent
+  const roots = runs.filter(r => !r.parentRunId);
+  function buildNode(run) {
+    const children = runs.filter(r => r.parentRunId === run.runId);
+    return { ...run, children: children.map(buildNode) };
+  }
+  return roots.map(buildNode);
 });
 
 // Pin mode
@@ -2857,6 +4716,16 @@ app.whenReady().then(() => {
     });
   }
 
+  // ── Start Plugin System ──
+  pluginHost.init().catch((err) => {
+    console.error("[wotch] Plugin system failed to start:", err.message);
+  });
+
+  // ── Start Agent System ──
+  agentManager.init().catch((err) => {
+    console.error("[wotch] Agent system failed to start:", err.message);
+  });
+
   // If settings say start expanded or pinned, expand immediately
   if (settings.startExpanded || isPinned) {
     setTimeout(() => expand(), 300);
@@ -2864,6 +4733,14 @@ app.whenReady().then(() => {
 
   // Global hotkey: Ctrl/Cmd + ` (backtick)
   globalShortcut.register("CommandOrControl+`", toggle);
+
+  // Agent emergency stop — global shortcut so it works even if window is not focused (INV-AGENT-006)
+  globalShortcut.register("CommandOrControl+Shift+K", () => {
+    agentManager.emergencyStopAll();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("plugin-notification", { pluginId: "system", message: "Emergency stop: all agents halted", type: "error", duration: 3000 });
+    }
+  });
 
   // System tray
   const trayIcon = nativeImage.createFromDataURL(
@@ -2946,6 +4823,9 @@ app.on("will-quit", () => {
   clearInterval(idleCheckInterval);
   if (apiServer) apiServer.stop().catch(() => {});
   integrationManager.stop().catch(() => {});
+  pluginHost.deactivateAll().catch(() => {});
+  pluginHost.stop();
+  agentManager.stop();
   credentialManager.clearCache();
   if (claudeAPIManager) claudeAPIManager.stopStream();
   for (const [, p] of ptyProcesses) p.kill();
