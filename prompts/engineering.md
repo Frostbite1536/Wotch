@@ -10,8 +10,12 @@ You are working on **Wotch**, a cross-platform Electron desktop app that provide
 - **Platforms:** Windows 10/11, macOS 10.15+, Linux (X11 and Wayland)
 
 ## Architecture
-- `src/main.js` — Electron main process. Window management, PTY spawning, mouse tracking, global hotkey, Claude status detection, project detection, git operations, settings, system tray, auto-updater, notifications, multi-monitor display management.
-- `src/preload.js` — Secure IPC bridge. `contextBridge.exposeInMainWorld("wotch", {...})`. Only specific channels (24 methods).
+- `src/main.js` — Electron main process. Window management, PTY spawning, mouse tracking, global hotkey, Claude status detection, project detection, git operations, settings, system tray, auto-updater, notifications, multi-monitor display management, Claude Code integration manager.
+- `src/enhanced-status-detector.js` — Two-source status fusion (hooks priority > regex fallback). Produces rich status with tool names and file paths.
+- `src/hook-receiver.js` — HTTP server on localhost:19520 receiving Claude Code lifecycle events via `type: http` hooks.
+- `src/claude-integration-manager.js` — Central coordinator for integration channels (hooks + MCP). Manages session-to-tab mapping, auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP).
+- `src/mcp-server.js` — Standalone MCP server script launched by Claude Code via stdio transport. Exposes 8 Wotch tools. Connects to main process via TCP IPC.
+- `src/preload.js` — Secure IPC bridge. `contextBridge.exposeInMainWorld("wotch", {...})`. Only specific channels (~30 methods).
 - `src/index.html` — Renderer HTML and CSS. Pill, panel, tabs, settings panel, overlays (diff viewer, command palette, search bar).
 - `src/renderer.js` — Renderer JavaScript (ES module). All UI logic: tab management, themes, search, diff viewer, command palette, drag-to-resize, settings wiring.
 
@@ -45,6 +49,7 @@ You are working on **Wotch**, a cross-platform Electron desktop app that provide
 - **Themes:** New CSS colors must be added to all 4 theme presets. Terminal themes (xterm.js) are separate from CSS vars — update `getTermTheme()` and `applyTheme()`.
 - **Multi-monitor:** Positioning uses `getTargetDisplay()` not `screen.getPrimaryDisplay()`. Always add `display.bounds.x/y` offsets.
 - **Settings:** New settings need: default in `DEFAULT_SETTINGS` (main.js), UI element in index.html, wiring in renderer.js (`loadSettingsUI`, `debouncedSave`, event listener).
+- **Integration channels:** Hook receiver uses `type: http` hooks configured in `~/.claude/settings.json` (NOT `~/.claude.json`). MCP server is registered in `~/.claude.json` (NOT `~/.claude/settings.json`). These are different files.
 - **Tab bar re-renders:** `renderTabBar()` is called frequently (on status updates, tab changes). It skips re-render when `dragTabId` is set to avoid interrupting drag-to-reorder. If you add new callers of `renderTabBar()`, this guard still protects you.
 
 ## Security Rules (Non-Negotiable)

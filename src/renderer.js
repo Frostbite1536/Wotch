@@ -806,19 +806,45 @@ const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
 const setDisplay = document.getElementById("set-display");
 const setPosition = document.getElementById("set-position");
+const setHooksEnabled = document.getElementById("set-hooks-enabled");
+const setMcpEnabled = document.getElementById("set-mcp-enabled");
+const hooksDot = document.getElementById("hooks-dot");
+const mcpDot = document.getElementById("mcp-dot");
+const btnReconfigureHooks = document.getElementById("btn-reconfigure-hooks");
+const btnReregisterMcp = document.getElementById("btn-reregister-mcp");
+
+let integrationPollTimer = null;
 
 function openSettings() {
   settingsOpen = true;
   settingsOverlay.classList.add("open");
   loadSettingsUI();
+  refreshIntegrationStatus();
+  integrationPollTimer = setInterval(refreshIntegrationStatus, 5000);
 }
 
 function closeSettings() {
   settingsOpen = false;
   settingsOverlay.classList.remove("open");
+  if (integrationPollTimer) {
+    clearInterval(integrationPollTimer);
+    integrationPollTimer = null;
+  }
   // Re-focus terminal
   const active = tabs.find((t) => t.id === activeTabId);
   if (active) active.term.focus();
+}
+
+async function refreshIntegrationStatus() {
+  try {
+    const status = await window.wotch.getIntegrationStatus();
+    if (hooksDot) {
+      hooksDot.className = "channel-dot " + (status.hooks.active ? "active" : "inactive");
+    }
+    if (mcpDot) {
+      mcpDot.className = "channel-dot " + (status.mcp.registered ? "active" : "inactive");
+    }
+  } catch { /* ignore */ }
 }
 
 async function loadSettingsUI() {
@@ -846,6 +872,10 @@ async function loadSettingsUI() {
       } catch { /* ignore */ }
     }
     renderSshProfiles();
+    // Integration settings
+    if (setHooksEnabled) setHooksEnabled.classList.toggle("on", s.integrationHooksEnabled !== false);
+    if (setMcpEnabled) setMcpEnabled.classList.toggle("on", s.integrationMcpEnabled !== false);
+    refreshIntegrationStatus();
   } catch { /* ignore */ }
 }
 
@@ -867,6 +897,8 @@ function debouncedSave() {
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
       position: setPosition ? setPosition.value : "top",
+      integrationHooksEnabled: setHooksEnabled ? setHooksEnabled.classList.contains("on") : true,
+      integrationMcpEnabled: setMcpEnabled ? setMcpEnabled.classList.contains("on") : true,
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -904,6 +936,54 @@ if (setDisplay) {
 if (setPosition) {
   setPosition.addEventListener("change", debouncedSave);
 }
+if (setHooksEnabled) {
+  setHooksEnabled.addEventListener("click", () => {
+    setHooksEnabled.classList.toggle("on");
+    debouncedSave();
+  });
+}
+if (setMcpEnabled) {
+  setMcpEnabled.addEventListener("click", () => {
+    setMcpEnabled.classList.toggle("on");
+    debouncedSave();
+  });
+}
+if (btnReconfigureHooks) {
+  btnReconfigureHooks.addEventListener("click", async () => {
+    const result = await window.wotch.configureHooks();
+    if (result.success) {
+      btnReconfigureHooks.textContent = result.added > 0 ? `Configured ${result.added} hooks` : "Already configured";
+      setTimeout(() => { btnReconfigureHooks.textContent = "Reconfigure Hooks"; }, 2000);
+    }
+  });
+}
+if (btnReregisterMcp) {
+  btnReregisterMcp.addEventListener("click", async () => {
+    const result = await window.wotch.registerMCP();
+    if (result.success) {
+      btnReregisterMcp.textContent = result.registered ? "Registered" : "Already registered";
+      setTimeout(() => { btnReregisterMcp.textContent = "Re-register MCP"; }, 2000);
+    }
+  });
+}
+
+// ── Terminal buffer read (for MCP server) ──
+window.wotch.onTerminalBufferRead(({ tabId, lines }) => {
+  const tab = tabs.find((t) => t.id === (tabId || activeTabId));
+  if (!tab) {
+    window.wotch.sendTerminalBuffer("(tab not found)");
+    return;
+  }
+  const buf = tab.term.buffer.active;
+  const totalRows = buf.length;
+  const startRow = Math.max(0, totalRows - (lines || 50));
+  const output = [];
+  for (let i = startRow; i < totalRows; i++) {
+    const line = buf.getLine(i);
+    if (line) output.push(line.translateToString(true));
+  }
+  window.wotch.sendTerminalBuffer(output.join("\n"));
+});
 
 btnSettings.addEventListener("click", (e) => {
   e.stopPropagation();

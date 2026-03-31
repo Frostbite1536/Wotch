@@ -1002,6 +1002,16 @@
     .settings-section {
       margin-bottom: 16px;
     }
+    .channel-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .channel-dot.active { background: var(--green); }
+    .channel-dot.inactive { background: var(--text-muted); opacity: 0.5; }
     .settings-section-title {
       font-size: 9px;
       text-transform: uppercase;
@@ -1309,6 +1319,31 @@
           <div class="settings-section-title">SSH Connections</div>
           <div id="ssh-profiles-list"></div>
           <button class="settings-reset-btn" id="btn-ssh-add" style="margin-top:8px;">+ Add SSH Connection</button>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Claude Code Integration</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="hooks-dot"></span>
+                Hooks (status events)
+              </div>
+            </div>
+            <div class="toggle-btn" id="set-hooks-enabled"><div class="toggle-knob"></div></div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="mcp-dot"></span>
+                MCP Server (tool access)
+              </div>
+            </div>
+            <div class="toggle-btn" id="set-mcp-enabled"><div class="toggle-knob"></div></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="settings-reset-btn" id="btn-reconfigure-hooks">Reconfigure Hooks</button>
+            <button class="settings-reset-btn" id="btn-reregister-mcp">Re-register MCP</button>
+          </div>
         </div>
       </div>
       <div class="settings-footer">

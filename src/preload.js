@@ -102,4 +102,16 @@ contextBridge.exposeInMainWorld("wotch", {
     ipcRenderer.removeAllListeners("ssh-host-verify");
     ipcRenderer.on("ssh-host-verify", (_e, payload) => callback(payload));
   },
+
+  // ── Claude Code Integration ────────────────────────────────
+  getIntegrationStatus: () => ipcRenderer.invoke("integration-status"),
+  configureHooks: () => ipcRenderer.invoke("integration-configure-hooks"),
+  registerMCP: () => ipcRenderer.invoke("integration-register-mcp"),
+
+  // Terminal buffer read (used by MCP server via main process)
+  onTerminalBufferRead: (callback) => {
+    ipcRenderer.removeAllListeners("terminal-buffer-read");
+    ipcRenderer.on("terminal-buffer-read", (_e, payload) => callback(payload));
+  },
+  sendTerminalBuffer: (data) => ipcRenderer.send("terminal-buffer-response", data),
 });

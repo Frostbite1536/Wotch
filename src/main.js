@@ -6,6 +6,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
 const { Client: SSHClient } = require("ssh2");
+const { ClaudeIntegrationManager } = require("./claude-integration-manager");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -75,6 +76,13 @@ const DEFAULT_SETTINGS = {
   displayIndex: 0,           // 0 = primary display
   position: "top",           // "top", "left", or "right"
   sshProfiles: [],           // saved SSH connection profiles
+  // Claude Code integration
+  integrationHooksEnabled: true,
+  integrationHooksPort: 19520,
+  integrationMcpEnabled: true,
+  integrationMcpIpcPort: 19523,
+  integrationAutoConfigureHooks: true,
+  integrationAutoRegisterMCP: true,
 };
 
 function loadSettings() {
@@ -458,7 +466,7 @@ function createPty(tabId, cwd) {
     cols: 80,
     rows: 24,
     cwd: startDir,
-    env: { ...process.env, TERM: "xterm-256color" },
+    env: { ...process.env, TERM: "xterm-256color", WOTCH_TAB_ID: tabId },
   });
 
   ptyProc.onData((data) => {
@@ -475,10 +483,12 @@ function createPty(tabId, cwd) {
     }
     ptyProcesses.delete(tabId);
     claudeStatus.removeTab(tabId);
+    integrationManager.removeTab(tabId);
   });
 
   ptyProcesses.set(tabId, ptyProc);
   claudeStatus.addTab(tabId);
+  integrationManager.addTab(tabId, startDir);
   return tabId;
 }
 
@@ -941,6 +951,8 @@ class ClaudeStatusDetector {
     // Only broadcast if something changed
     if (tab.state !== prevState || tab.description !== prevDesc) {
       this.broadcast();
+      // Feed into the enhanced integration detector as the regex source
+      integrationManager.feedRegex(tabId, tab.state, tab.description);
     }
   }
 
@@ -1016,6 +1028,42 @@ class ClaudeStatusDetector {
 }
 
 const claudeStatus = new ClaudeStatusDetector();
+
+// ── Integration Manager ────────────────────────────────────────────
+const integrationManager = new ClaudeIntegrationManager({
+  hooksEnabled: settings.integrationHooksEnabled,
+  hooksPort: settings.integrationHooksPort,
+  mcpEnabled: settings.integrationMcpEnabled,
+  mcpIpcPort: settings.integrationMcpIpcPort,
+  autoConfigureHooks: settings.integrationAutoConfigureHooks,
+  autoRegisterMCP: settings.integrationAutoRegisterMCP,
+});
+
+// Wire the enhanced detector's status-changed events to the renderer broadcast
+integrationManager.on("status-changed", (tabId, status) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const aggregate = integrationManager.getAggregateStatus();
+    const perTab = {};
+    for (const [tid] of integrationManager.statusDetector.tabs) {
+      perTab[tid] = integrationManager.getStatus(tid);
+    }
+    mainWindow.webContents.send("claude-status", { aggregate, perTab });
+  }
+});
+
+// Wire notification events from hooks
+integrationManager.on("notification", (event) => {
+  if (Notification.isSupported()) {
+    try {
+      const notif = new Notification({
+        title: "Claude Code",
+        body: event.notification_type || "Notification",
+        silent: false,
+      });
+      notif.show();
+    } catch { /* notifications may not be available */ }
+  }
+});
 
 // Also detect idle timeout — if no output for 5s while in thinking/working, might be done
 const idleCheckInterval = setInterval(() => {
@@ -1486,6 +1534,7 @@ ipcMain.on("pty-kill", (_event, { tabId }) => {
   const ph = pendingHostVerify.get(tabId);
   if (ph) { ph.resolve(false); pendingHostVerify.delete(tabId); }
   claudeStatus.removeTab(tabId);
+  integrationManager.removeTab(tabId);
 });
 
 ipcMain.handle("get-cwd", () => os.homedir());
@@ -1526,6 +1575,8 @@ const ALLOWED_SETTING_KEYS = [
   "hoverPadding", "collapseDelay", "mousePollingMs", "defaultShell",
   "startExpanded", "pinned", "theme", "autoLaunchClaude",
   "displayIndex", "position",
+  "integrationHooksEnabled", "integrationMcpEnabled",
+  "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -1605,6 +1656,39 @@ ipcMain.handle("git-diff", (_event, { projectPath, mode }) => {
   } catch (err) {
     return { success: false, diff: err.message };
   }
+});
+
+// ── Integration IPC handlers ─────────────────────────────────────────
+ipcMain.handle("integration-status", () => {
+  return integrationManager.getIntegrationStatus();
+});
+
+ipcMain.handle("integration-configure-hooks", () => {
+  try {
+    const added = integrationManager.configureClaudeHooks();
+    return { success: true, added };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("integration-register-mcp", () => {
+  try {
+    const mcpServerPath = app.isPackaged
+      ? path.join(process.resourcesPath, "mcp-server.js")
+      : path.join(__dirname, "mcp-server.js");
+    const registered = integrationManager.registerMCPServer(mcpServerPath);
+    return { success: true, registered };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Terminal buffer read — used by MCP server to read xterm.js content
+ipcMain.handle("terminal-buffer-read", (_event, { tabId, lines }) => {
+  // This is called from the main process MCP IPC handler.
+  // The actual buffer reading happens renderer-side; see below.
+  return null; // Placeholder — real impl uses renderer IPC round-trip
 });
 
 // Display management
@@ -1717,6 +1801,109 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  // ── Start Claude Code Integration ──
+  const mcpHandlers = {
+    gitCheckpoint: async (params) => {
+      // Find the first known project path for MCP calls
+      const projectPath = [...knownProjectPaths][0];
+      if (!projectPath) return { success: false, message: "No project active" };
+      return gitCheckpoint(projectPath, params.message);
+    },
+    gitGetStatus: async () => {
+      const projectPath = [...knownProjectPaths][0];
+      if (!projectPath) return null;
+      return gitGetStatus(projectPath);
+    },
+    gitGetDiff: async (params) => {
+      const projectPath = [...knownProjectPaths][0];
+      if (!projectPath) return "(no project active)";
+      try {
+        const args = ["diff", `-U${params.contextLines || 3}`];
+        return execFileSync("git", args, {
+          cwd: projectPath, encoding: "utf-8", timeout: 10000, maxBuffer: 1024 * 1024,
+        }) || "(no changes)";
+      } catch (err) {
+        return `Error: ${err.message}`;
+      }
+    },
+    getProjectInfo: async () => {
+      const projectPath = [...knownProjectPaths][0];
+      if (!projectPath) return { path: null, name: null };
+      return { path: projectPath, name: path.basename(projectPath) };
+    },
+    terminalBuffer: async (params) => {
+      // Request buffer from renderer via IPC round-trip
+      if (!mainWindow || mainWindow.isDestroyed()) return "(window not available)";
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve("(timeout reading buffer)"), 5000);
+        const handler = (_e, data) => {
+          clearTimeout(timeout);
+          ipcMain.removeListener("terminal-buffer-response", handler);
+          resolve(data || "(empty)");
+        };
+        ipcMain.on("terminal-buffer-response", handler);
+        mainWindow.webContents.send("terminal-buffer-read", {
+          tabId: params.tabId,
+          lines: params.lines || 50,
+        });
+      });
+    },
+    notify: async (params) => {
+      if (Notification.isSupported()) {
+        const notif = new Notification({
+          title: params.title || "Wotch",
+          body: params.body || "",
+          silent: false,
+        });
+        notif.show();
+      }
+      return "ok";
+    },
+    listTabs: async () => {
+      const tabs = [];
+      for (const [tabId] of ptyProcesses) {
+        const status = integrationManager.getStatus(tabId);
+        tabs.push({ tabId, type: "local", status: status.state });
+      }
+      for (const [tabId, s] of sshSessions) {
+        const status = integrationManager.getStatus(tabId);
+        tabs.push({ tabId, type: "ssh", profileId: s.profileId, status: status.state });
+      }
+      return tabs;
+    },
+    tabStatus: async (params) => {
+      return integrationManager.getStatus(params.tabId);
+    },
+  };
+
+  integrationManager.start(mcpHandlers).then(() => {
+    // Auto-configure hooks if Claude Code is installed
+    if (settings.integrationAutoConfigureHooks && settings.integrationHooksEnabled) {
+      const claudeDir = path.join(os.homedir(), ".claude");
+      if (fs.existsSync(claudeDir)) {
+        try {
+          integrationManager.configureClaudeHooks();
+        } catch (err) {
+          console.error("[wotch] Failed to auto-configure hooks:", err.message);
+        }
+      }
+    }
+
+    // Auto-register MCP server
+    if (settings.integrationAutoRegisterMCP && settings.integrationMcpEnabled) {
+      try {
+        const mcpServerPath = app.isPackaged
+          ? path.join(process.resourcesPath, "mcp-server.js")
+          : path.join(__dirname, "mcp-server.js");
+        integrationManager.registerMCPServer(mcpServerPath);
+      } catch (err) {
+        console.error("[wotch] Failed to auto-register MCP:", err.message);
+      }
+    }
+  }).catch((err) => {
+    console.error("[wotch] Integration manager failed to start:", err.message);
+  });
+
   // If settings say start expanded or pinned, expand immediately
   if (settings.startExpanded || isPinned) {
     setTimeout(() => expand(), 300);
@@ -1804,6 +1991,7 @@ app.whenReady().then(() => {
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   clearInterval(idleCheckInterval);
+  integrationManager.stop().catch(() => {});
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
   for (const [, s] of sshSessions) {

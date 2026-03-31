@@ -124,6 +124,25 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 
 **Enforcement:** `getTopOffset()` checks `HAS_NOTCH` and adjusts.
 
+### INV-SEC-006: Hook Receiver Localhost Binding
+The hook receiver HTTP server must bind to `127.0.0.1` only. It must never bind to `0.0.0.0` or any external interface.
+
+**Rationale:** The hook receiver accepts Claude Code lifecycle events. Binding to an external interface would allow remote attackers to inject fake hook events and manipulate status display.
+
+**Enforcement:** `HookReceiver` constructor hardcodes `'127.0.0.1'` in `server.listen()`. Code review.
+
+### INV-SEC-007: MCP Tools Must Not Expose Destructive Operations
+MCP tools exposed to Claude Code must never allow: file write/delete, shell command execution, git push/reset/rebase/force operations, settings modification, SSH credential access, or PTY write (typing into terminals).
+
+**Rationale:** Claude Code has full tool access. Exposing destructive operations via MCP would allow Claude to make irreversible changes to the user's system without explicit terminal interaction.
+
+**Enforcement:** Code review of `mcp-server.js` tool definitions. Only read operations and additive-only operations (checkpoint) are allowed.
+
+### INV-SEC-008: MCP IPC Server Localhost Binding
+The MCP IPC TCP server must bind to `127.0.0.1` only, same as INV-SEC-006.
+
+**Enforcement:** `MCPIPCServer` hardcodes `'127.0.0.1'` in `server.listen()`.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -133,3 +152,4 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 | 2026-03-28 | INV-UX-002 | Updated for multi-monitor support | Pill can now target any display, falls back to primary on disconnect |
 | 2026-03-28 | INV-UX-002 | Updated for customizable position | Pill can sit on top, left, or right edge; uses workArea for accurate placement; clamps expanded panel to screen bounds |
 | 2026-03-28 | INV-SEC-005, INV-DATA-004, INV-DATA-005 | Added for SSH support | SSH credentials never persisted; SSH session map follows same cleanup pattern as PTY map; sshProfiles isolated from general settings saves |
+| 2026-03-31 | INV-SEC-006, INV-SEC-007, INV-SEC-008 | Added for Claude Code deep integration | Hook receiver and MCP IPC server localhost-only; MCP tools read-only + additive |
