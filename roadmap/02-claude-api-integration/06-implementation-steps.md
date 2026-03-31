@@ -16,9 +16,9 @@ npm install @anthropic-ai/sdk
 
 **Files:** `src/main.js`
 
-Implement encrypted API key storage using Electron's `safeStorage` API. Store encrypted key at `~/.wotch/credentials` with mode `0600`. Fallback to base64 encoding when safeStorage is unavailable.
+Implement encrypted API key storage using Electron's `safeStorage` API. Store encrypted key at `~/.wotch/credentials` with mode `0600`. Fallback to AES-256-GCM with machine-derived key when safeStorage is unavailable.
 
-**IPC handlers:** `save-api-key`, `load-api-key`, `delete-api-key`, `test-api-key`
+**IPC handlers:** `claude-set-api-key`, `claude-has-key`, `claude-delete-key`, `claude-validate-key`
 
 **Testing:**
 1. Save a key → file created with mode 0600
@@ -42,7 +42,7 @@ Implement encrypted API key storage using Electron's `safeStorage` API. Store en
 - Persists conversations to `~/.wotch/conversations/<project-hash>/`
 - Supports stream cancellation
 
-**IPC handlers:** `chat-send`, `chat-cancel`, `chat-list-conversations`, `chat-new-conversation`
+**IPC handlers:** `claude-send-message`, `claude-stop-stream`, `claude-get-conversations`, `claude-new-conversation`
 
 **Testing:**
 1. Send message → streaming response arrives
@@ -91,7 +91,7 @@ Implement `gatherContext()` and `formatContextAsSystemPrompt()` as specified in 
 
 Implement `TokenTracker` and pricing as specified in `05-cost-tracking.md`. Budget checking with toast alerts.
 
-**IPC handlers:** `get-usage-stats`, `clear-usage-log`
+**IPC handlers:** `claude-get-usage`, `claude-set-budget`
 
 **Testing:** Token counts accumulate, usage log written, budget alerts fire.
 
@@ -111,7 +111,7 @@ Add "Claude API" section to settings: API key configure/test/delete, default mod
 
 **Files:** `src/renderer.js`
 
-- `Ctrl+L` / `Cmd+L` — toggle chat view
+- `Ctrl+Shift+C` / `Cmd+Shift+C` — toggle chat view
 - `Escape` in chat → back to terminal
 - Command palette: "Toggle Chat Panel", "New Chat Conversation"
 
@@ -121,8 +121,8 @@ Add "Claude API" section to settings: API key configure/test/delete, default mod
 
 **Files:** `docs/INVARIANTS.md`
 
-- **INV-SEC-010:** API Key Encryption — use safeStorage, mode 0600, never in logs/settings/renderer
-- **INV-SEC-011:** API Key Memory Handling — only in Anthropic SDK client, masked preview to renderer
+- **INV-SEC-014:** API Key Encryption — use safeStorage, mode 0600, never in logs/settings/renderer
+- **INV-SEC-015:** API Key Never in Renderer — only in Anthropic SDK client, no IPC handler for getKey()
 - **INV-DATA-006:** Conversation Persistence — per-project dirs, resilient to corrupted JSON
 
 ---
@@ -140,4 +140,4 @@ Add "Claude API" section to settings: API key configure/test/delete, default mod
 
 ## New IPC Channels (14)
 
-`save-api-key`, `load-api-key`, `delete-api-key`, `test-api-key`, `chat-send`, `chat-cancel`, `chat-list-conversations`, `chat-new-conversation`, `chat-stream-chunk` (main→renderer), `chat-stream-end` (main→renderer), `chat-usage-update` (main→renderer), `chat-budget-alert` (main→renderer), `get-usage-stats`, `clear-usage-log`
+`claude-set-api-key`, `claude-validate-key`, `claude-has-key`, `claude-delete-key`, `claude-get-models`, `claude-send-message`, `claude-stop-stream`, `claude-stream-chunk` (main→renderer), `claude-stream-end` (main→renderer), `claude-stream-error` (main→renderer), `claude-get-context`, `claude-get-conversations`, `claude-load-conversation`, `claude-delete-conversation`, `claude-new-conversation`, `claude-get-usage`, `claude-set-budget`
