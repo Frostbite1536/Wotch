@@ -488,6 +488,7 @@ class ClaudeAPIManager {
     // Start streaming
     this.streaming = true;
     this.currentAbortController = new AbortController();
+    let fullText = "";
 
     try {
       const stream = client.messages.stream({
@@ -496,8 +497,6 @@ class ClaudeAPIManager {
         messages: apiMessages,
         max_tokens: 4096,
       }, { signal: this.currentAbortController.signal });
-
-      let fullText = "";
 
       stream.on("text", (text) => {
         fullText += text;
@@ -551,6 +550,16 @@ class ClaudeAPIManager {
       return { success: true };
     } catch (err) {
       if (err.name === "AbortError") {
+        // Save partial response if any text was received
+        if (fullText.length > 0) {
+          conv.messages.push({
+            role: "assistant",
+            content: fullText,
+            timestamp: new Date().toISOString(),
+            interrupted: true,
+          });
+          this._saveConversation(conv);
+        }
         sendToRenderer("claude-stream-error", { error: "Stream cancelled", code: "CANCELLED" });
         return { success: false, error: "cancelled" };
       }

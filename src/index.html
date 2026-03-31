@@ -350,7 +350,9 @@
       background: var(--accent-dim);
       padding: 1px 6px;
       border-radius: 3px;
-      cursor: default;
+      cursor: pointer;
+      user-select: none;
+      transition: opacity 0.15s;
     }
     #chat-messages {
       flex: 1;
@@ -1434,7 +1436,7 @@
     <!-- View toggle bar -->
     <div id="view-toggle-bar">
       <button class="view-toggle-btn active" id="btn-view-terminal" title="Terminal view">Terminal</button>
-      <button class="view-toggle-btn" id="btn-view-chat" title="Chat with Claude (Ctrl+Shift+C)">Chat</button>
+      <button class="view-toggle-btn" id="btn-view-chat" title="Chat with Claude (Ctrl+Shift+L)">Chat</button>
     </div>
 
     <div id="terminals">
@@ -1491,7 +1493,7 @@
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+S</kbd><span>Checkpoint</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+T</kbd><span>New Tab</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+F</kbd><span>Search</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+C</kbd><span>Chat</span></div>
+        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+L</kbd><span>Chat</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+P</kbd><span>Commands</span></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">

@@ -111,7 +111,7 @@ Add "Claude API" section to settings: API key configure/test/delete, default mod
 
 **Files:** `src/renderer.js`
 
-- `Ctrl+Shift+C` / `Cmd+Shift+C` — toggle chat view
+- `Ctrl+Shift+L` / `Cmd+Shift+L` — toggle chat view
 - `Escape` in chat → back to terminal
 - Command palette: "Toggle Chat Panel", "New Chat Conversation"
 

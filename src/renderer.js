@@ -712,8 +712,8 @@ document.addEventListener("keydown", (e) => {
     paletteOpen ? closePalette() : openPalette();
     return;
   }
-  // Ctrl+Shift+C — toggle chat
-  if (e.ctrlKey && e.shiftKey && e.key === "C") {
+  // Ctrl+Shift+L — toggle chat (avoids Ctrl+Shift+C which is terminal copy on Linux)
+  if (e.ctrlKey && e.shiftKey && e.key === "L") {
     e.preventDefault();
     if (chatView) switchToTerminal(); else switchToChat();
     return;
@@ -1183,6 +1183,7 @@ const btnChatHistoryClose = document.getElementById("btn-chat-history-close");
 
 let chatView = false; // false = terminal, true = chat
 let chatStreaming = false;
+let chatContextEnabled = { terminal: true, git: true, diff: true, files: true };
 let chatSessionCost = 0;
 let chatPendingChunks = "";
 let chatRafScheduled = false;
@@ -1232,20 +1233,46 @@ if (btnViewChat) btnViewChat.addEventListener("click", switchToChat);
 async function refreshContextBadges() {
   try {
     const meta = await window.wotch.claude.getContext(activeTabId, currentProject?.path);
-    if (ctxTerminal) ctxTerminal.textContent = meta.terminal ? `Term: ${meta.terminal.lineCount} lines` : "Term: --";
-    if (ctxGit) ctxGit.textContent = meta.git ? `Git: ${meta.git.changedFiles} files` : "Git: --";
-    if (ctxDiff) ctxDiff.textContent = meta.diff ? `Diff: ${meta.diff.diffLines} lines` : "Diff: --";
-    if (ctxFiles) ctxFiles.textContent = meta.files ? `Files: ${meta.files.fileCount}` : "Files: --";
+    if (ctxTerminal) {
+      ctxTerminal.textContent = meta.terminal ? `Term: ${meta.terminal.lineCount} lines` : "Term: --";
+      ctxTerminal.style.opacity = chatContextEnabled.terminal ? "1" : "0.4";
+      ctxTerminal.style.textDecoration = chatContextEnabled.terminal ? "none" : "line-through";
+    }
+    if (ctxGit) {
+      ctxGit.textContent = meta.git ? `Git: ${meta.git.changedFiles} files` : "Git: --";
+      ctxGit.style.opacity = chatContextEnabled.git ? "1" : "0.4";
+      ctxGit.style.textDecoration = chatContextEnabled.git ? "none" : "line-through";
+    }
+    if (ctxDiff) {
+      ctxDiff.textContent = meta.diff ? `Diff: ${meta.diff.diffLines} lines` : "Diff: --";
+      ctxDiff.style.opacity = chatContextEnabled.diff ? "1" : "0.4";
+      ctxDiff.style.textDecoration = chatContextEnabled.diff ? "none" : "line-through";
+    }
+    if (ctxFiles) {
+      ctxFiles.textContent = meta.files ? `Files: ${meta.files.fileCount}` : "Files: --";
+      ctxFiles.style.opacity = chatContextEnabled.files ? "1" : "0.4";
+      ctxFiles.style.textDecoration = chatContextEnabled.files ? "none" : "line-through";
+    }
   } catch { /* ignore */ }
 }
+
+// Context badge toggles
+if (ctxTerminal) ctxTerminal.addEventListener("click", () => { chatContextEnabled.terminal = !chatContextEnabled.terminal; refreshContextBadges(); });
+if (ctxGit) ctxGit.addEventListener("click", () => { chatContextEnabled.git = !chatContextEnabled.git; refreshContextBadges(); });
+if (ctxDiff) ctxDiff.addEventListener("click", () => { chatContextEnabled.diff = !chatContextEnabled.diff; refreshContextBadges(); });
+if (ctxFiles) ctxFiles.addEventListener("click", () => { chatContextEnabled.files = !chatContextEnabled.files; refreshContextBadges(); });
 
 // Simple markdown renderer
 function renderMarkdown(text) {
   // Escape HTML
   let html = escapeHtml(text);
 
-  // Code blocks (``` ... ```)
+  // Code blocks (``` ... ```) — handle both closed and unclosed (streaming)
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    return `<pre><code class="lang-${lang}">${code.trim()}</code></pre>`;
+  });
+  // Handle unclosed code block at end (during streaming)
+  html = html.replace(/```(\w*)\n([\s\S]+)$/g, (_match, lang, code) => {
     return `<pre><code class="lang-${lang}">${code.trim()}</code></pre>`;
   });
 
@@ -1253,10 +1280,31 @@ function renderMarkdown(text) {
   html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
 
   // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*\*([\s\S]+?)\*\*/g, '<strong>$1</strong>');
 
   // Italic
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>');
+
+  // Unordered lists (lines starting with - or *)
+  html = html.replace(/((?:^|\n)(?:[*\-] .+(?:\n|$))+)/g, (match) => {
+    const items = match.trim().split("\n").map((line) => {
+      const content = line.replace(/^[*\-] /, "");
+      return `<li>${content}</li>`;
+    }).join("");
+    return `<ul style="margin:4px 0;padding-left:18px;">${items}</ul>`;
+  });
+
+  // Ordered lists (lines starting with 1. 2. etc.)
+  html = html.replace(/((?:^|\n)(?:\d+\. .+(?:\n|$))+)/g, (match) => {
+    const items = match.trim().split("\n").map((line) => {
+      const content = line.replace(/^\d+\. /, "");
+      return `<li>${content}</li>`;
+    }).join("");
+    return `<ol style="margin:4px 0;padding-left:18px;">${items}</ol>`;
+  });
 
   // Line breaks
   html = html.replace(/\n/g, '<br>');
@@ -1353,6 +1401,11 @@ async function sendChatMessage() {
     }
   } catch { /* ignore */ }
 
+  // Warn if no project selected (conversation won't persist)
+  if (!currentProject && chatMessages.querySelectorAll(".chat-msg").length === 0) {
+    showToast("No project selected — conversation won't be saved across restarts", "info");
+  }
+
   addUserMessage(text);
   chatInput.value = "";
   chatInput.style.height = "auto";
@@ -1369,7 +1422,7 @@ async function sendChatMessage() {
     text,
     {
       model: chatModelSelect?.value || "claude-sonnet-4-6-20250514",
-      contextSources: { terminal: true, git: true, diff: true, files: true },
+      contextSources: { ...chatContextEnabled },
     }
   );
 }
@@ -1492,11 +1545,18 @@ if (btnChatHistory) {
         chatHistoryList.querySelectorAll(".chat-history-delete").forEach((btn) => {
           btn.addEventListener("click", async (e) => {
             e.stopPropagation();
-            await window.wotch.claude.deleteConversation(btn.dataset.id);
+            const deletedId = btn.dataset.id;
+            await window.wotch.claude.deleteConversation(deletedId);
             btn.closest(".chat-history-item").remove();
             if (chatHistoryList.querySelectorAll(".chat-history-item").length === 0) {
               chatHistoryList.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:16px;text-align:center;">No conversations yet</div>';
             }
+            // Clear chat panel if the deleted conversation was the active one
+            chatMessages.innerHTML = "";
+            if (chatWelcome) { chatWelcome.style.display = ""; chatMessages.appendChild(chatWelcome); }
+            chatSessionCost = 0;
+            if (chatCost) chatCost.textContent = "$0.00";
+            if (chatTokens) chatTokens.textContent = "";
           });
         });
       }
@@ -1924,7 +1984,7 @@ const COMMANDS = [
     if (setApiEnabled) setApiEnabled.classList.toggle("on", !s.apiEnabled);
     setTimeout(refreshIntegrationStatus, 1000);
   }},
-  { name: "Chat: Toggle Chat Panel", shortcut: "Ctrl+Shift+C", action: () => {
+  { name: "Chat: Toggle Chat Panel", shortcut: "Ctrl+Shift+L", action: () => {
     if (chatView) switchToTerminal(); else switchToChat();
   }},
   { name: "Chat: New Conversation", shortcut: "", action: async () => {
