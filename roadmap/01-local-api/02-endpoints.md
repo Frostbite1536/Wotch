@@ -129,21 +129,31 @@ Get the current Claude Code status for all tabs and the aggregate status.
   "data": {
     "aggregate": {
       "state": "working",
-      "description": "Editing 3 files (renderer.js)",
-      "tabId": "tab-2"
+      "description": "Editing renderer.js",
+      "tabId": "tab-2",
+      "source": "hooks",
+      "tool": "Edit",
+      "file": "src/renderer.js"
     },
     "tabs": {
       "tab-1": {
         "state": "idle",
-        "description": "Ready"
+        "description": "",
+        "source": "none"
       },
       "tab-2": {
         "state": "working",
-        "description": "Editing 3 files (renderer.js)"
+        "description": "Editing renderer.js",
+        "source": "hooks",
+        "tool": "Edit",
+        "file": "src/renderer.js",
+        "line": null,
+        "agentDepth": 0
       },
       "tab-3": {
         "state": "thinking",
-        "description": "Thinking..."
+        "description": "Thinking...",
+        "source": "regex"
       }
     }
   }
@@ -155,8 +165,16 @@ Get the current Claude Code status for all tabs and the aggregate status.
 | `aggregate.state` | string | One of: `idle`, `thinking`, `working`, `waiting`, `done`, `error` |
 | `aggregate.description` | string | Human-readable description of the most important activity |
 | `aggregate.tabId` | string\|null | Tab driving the aggregate status |
+| `aggregate.source` | string | Which detection channel produced the status: `hooks`, `regex`, `timeout`, `none` |
+| `aggregate.tool` | string\|null | Active tool name when from hooks (e.g., `Bash`, `Edit`, `Read`) |
+| `aggregate.file` | string\|null | File being operated on when from hooks |
 | `tabs.<tabId>.state` | string | Same enum as aggregate |
 | `tabs.<tabId>.description` | string | Per-tab description |
+| `tabs.<tabId>.source` | string | Detection source for this tab |
+| `tabs.<tabId>.tool` | string\|null | Active tool (hooks only) |
+| `tabs.<tabId>.file` | string\|null | File path (hooks only) |
+| `tabs.<tabId>.line` | number\|null | Line number (hooks only, from tool_input) |
+| `tabs.<tabId>.agentDepth` | number | Sub-agent nesting depth (0 = top-level) |
 
 **Example:**
 
@@ -178,7 +196,12 @@ Get Claude status for a specific tab.
   "data": {
     "tabId": "tab-2",
     "state": "working",
-    "description": "Editing 3 files (renderer.js)"
+    "description": "Editing renderer.js",
+    "source": "hooks",
+    "tool": "Edit",
+    "file": "src/renderer.js",
+    "line": null,
+    "agentDepth": 0
   }
 }
 ```
@@ -269,7 +292,7 @@ Create a new terminal tab.
 }
 ```
 
-**Implementation note:** This creates a PTY in the main process and notifies the renderer via an IPC event to create the corresponding xterm.js terminal and tab UI element. A new IPC channel `api-tab-created` is sent from main to renderer for this purpose.
+**Implementation note:** This creates a PTY in the main process and notifies the renderer via the existing `create-tab` IPC pattern used by the renderer's tab creation logic. The API handler calls `createPty()` with the specified working directory and returns the new tab ID.
 
 ---
 
@@ -519,6 +542,8 @@ Get git status for a project.
 
 **Response 200 (not a git repo):**
 
+The underlying `gitGetStatus()` function returns `null` for non-git directories. The API endpoint wraps this:
+
 ```json
 {
   "ok": true,
@@ -528,6 +553,8 @@ Get git status for a project.
   }
 }
 ```
+
+**Implementation note:** The API handler checks for a `null` return from `gitGetStatus()` and returns the `isGitRepo: false` response shape. This wrapper logic lives in the API endpoint, not in the underlying function.
 
 ---
 

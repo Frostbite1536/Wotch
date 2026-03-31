@@ -214,23 +214,48 @@ Emitted when Claude Code status changes on any tab. Debounced to at most one eve
     "aggregate": {
       "state": "working",
       "description": "Editing 3 files (renderer.js)",
+      "source": "hooks",
+      "tool": "Edit",
+      "file": "renderer.js",
+      "line": 42,
+      "agentDepth": 0,
       "tabId": "tab-2"
     },
     "tabs": {
       "tab-1": {
         "state": "idle",
-        "description": "Ready"
+        "description": "Ready",
+        "source": "timeout",
+        "tool": null,
+        "file": null,
+        "line": null,
+        "agentDepth": 0
       },
       "tab-2": {
         "state": "working",
-        "description": "Editing 3 files (renderer.js)"
+        "description": "Editing 3 files (renderer.js)",
+        "source": "hooks",
+        "tool": "Edit",
+        "file": "renderer.js",
+        "line": 42,
+        "agentDepth": 0
       }
     }
   }
 }
 ```
 
-**Trigger:** `ClaudeStatusDetector.broadcast()` fires.
+| Field | Type | Description |
+|---|---|---|
+| `state` | string | `"idle"`, `"thinking"`, `"working"`, `"waiting"`, `"error"` |
+| `description` | string | Human-readable status description |
+| `source` | string | `"hooks"` or `"regex"` or `"timeout"` — which detection channel produced this status |
+| `tool` | string\|null | Active tool name (e.g. `"Edit"`, `"Bash"`, `"Read"`) or `null` if idle |
+| `file` | string\|null | File being operated on (from hook `tool_input`), or `null` |
+| `line` | number\|null | Line number (if available from hook `tool_input`), or `null` |
+| `agentDepth` | number | Nesting depth of Agent tool invocations (0 = top-level) |
+
+**Trigger:** `integrationManager.on('status-changed')` fires (wraps the EnhancedClaudeStatusDetector's two-source fusion of hooks and regex detection).
 
 ---
 
