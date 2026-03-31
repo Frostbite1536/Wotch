@@ -102,6 +102,18 @@ No other new dependencies. Markdown rendering is implemented with a lightweight 
 
 ---
 
+## Dependency: Plan 0 (Claude Code Deep Integration)
+
+Plan 2 benefits from Plan 0's MCP and bridge channels:
+
+- **Context sharing with running Claude Code sessions**: When a Claude Code instance is running in a Wotch terminal, the MCP channel already provides bidirectional data flow. The chat panel can access the same context that Claude Code sees (and vice versa), avoiding redundant API calls.
+- **Conversation awareness**: The bridge adapter receives `conversation_update` events from Claude Code, allowing the chat panel to show when Claude Code is already handling a task — preventing the user from asking the same question twice.
+- **Shared credential management**: Plan 0's MCP server configuration already handles `~/.claude/settings.json` writes. Plan 2's credential manager can extend the same config management patterns.
+
+If Plan 0 is not yet implemented, Plan 2 operates as a standalone API client with no awareness of running Claude Code sessions. All features work — context injection just comes from Wotch's own terminal/git state rather than from Claude Code's bridge.
+
+---
+
 ## Risks & Mitigations
 
 | Risk | Mitigation |

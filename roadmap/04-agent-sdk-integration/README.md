@@ -33,12 +33,20 @@ Agents are defined as declarative YAML/JSON files, loaded from `~/.wotch/agents/
 ### Not in scope
 
 - Custom tool authoring by users (Plan 3 Plugin SDK covers extensibility)
-- Multi-agent orchestration / agent-to-agent communication
 - Remote agent execution (agents run locally only)
 - Agent marketplace or distribution system
 - Fine-tuning or model training
 - Streaming audio or image tool outputs
-- MCP server integration (separate future plan)
+
+## Dependency: Plan 0 (Claude Code Deep Integration)
+
+Plan 4 benefits most heavily from Plan 0's infrastructure:
+
+- **Claude Code coordinator patterns**: Claude Code's own `coordinator/` module demonstrates multi-agent orchestration, sub-agent spawning, and parallel tool execution. Wotch's agent runtime should follow the same patterns for compatibility and proven reliability.
+- **Bridge-based coordination**: When both a Wotch agent and Claude Code are running in the same terminal, the bridge adapter enables coordination. A Wotch agent can observe Claude Code's state via bridge events and avoid conflicting operations (e.g., both trying to edit the same file).
+- **MCP tool sharing**: Wotch agents can call the same MCP tools that Claude Code uses (and vice versa). An agent can trigger a checkpoint via the MCP `wotch_checkpoint` tool, and Claude Code sees the result.
+- **Multi-agent orchestration**: Unlike the original "not in scope" item, Plan 0's bridge provides the communication channel needed for basic agent-to-Claude-Code coordination. Full multi-agent swarm orchestration remains out of scope, but single-agent ↔ Claude-Code coordination is achievable.
+- **Hook-triggered agents**: Agents can be triggered by structured hook events instead of regex-matched terminal output. For example, the Error Fixer agent triggers on a `Stop` hook with `reason: "error"` rather than pattern-matching terminal error output.
 
 ## Non-Goals
 

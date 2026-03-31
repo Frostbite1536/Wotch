@@ -84,6 +84,20 @@ Significant architectural and product decisions, recorded for future context.
 - Connection profiles (host, port, username, auth method, key path) are stored in `settings.sshProfiles`, managed via dedicated IPC handlers isolated from general settings saves.
 **Trade-off:** Adds `ssh2` as a runtime dependency (pure JS, no native bindings, well-maintained). Adds ~150 lines to main.js, ~200 lines to renderer.js, and ~100 lines of HTML/CSS. The transparent transport approach means Claude status detection, tab management, and xterm.js integration all work identically for SSH tabs.
 
+## 2026-03-31: Claude Code Deep Integration (Hooks-First Approach)
+
+**Decision:** Replace regex-based Claude Code status detection with structured integration using three channels: hooks (lifecycle events via HTTP), MCP (Wotch as tool server), and bridge (bidirectional IDE protocol). Hooks are the primary channel; MCP and bridge are additive.
+**Context:** Analysis of Claude Code's architecture (via leaked source at `instructkr/claude-code`) revealed that Claude Code exposes three structured integration surfaces: a hook system for lifecycle events, MCP server support for external tools, and a bidirectional IDE bridge protocol. The existing regex-based detection in `ClaudeStatusDetector` is fragile (false positives on non-Claude output, missed transitions, invisible states like context compression and agent spawning). Structured channels solve all of these issues.
+**Implementation:**
+- A `ClaudeIntegrationManager` coordinates three channels: `HookReceiver` (HTTP POST server on localhost:19520), `WotchMCPServer` (stdio/SSE MCP server exposing Wotch tools), and `BridgeAdapter` (WebSocket client for Claude Code's IDE bridge).
+- An `EnhancedClaudeStatusDetector` fuses data from all three channels using priority-based resolution (bridge > hooks > regex fallback).
+- Each channel is independently toggleable and degrades gracefully. With no channels active, the existing regex detector serves as fallback.
+- Auto-configuration writes hook commands and MCP server entries to `~/.claude/settings.json` (with user consent, never overwriting existing config).
+- New files: `src/hook-receiver.js`, `src/mcp-server.js`, `src/bridge-adapter.js`, `src/claude-integration-manager.js`, `src/enhanced-status-detector.js`.
+**Trade-off:** Adds 3 localhost servers (HTTP, TCP, WebSocket) and 5 new source files (~950 lines). The hook receiver and MCP IPC server add minor port management complexity. The bridge protocol is reverse-engineered from Claude Code's VS Code extension and may change between versions. Mitigated by: independent channel degradation, configurable ports with auto-fallback, and regex detector as an always-available safety net. The legal risk of using the leaked source directly is avoided — we only use the architectural insights to target Claude Code's public configuration surfaces (settings.json hooks, MCP server config, environment variables).
+
+---
+
 ## 2026-03-28: claudeStatus.removeTab in pty-kill Handler
 
 **Decision:** Add `claudeStatus.removeTab(tabId)` to the `pty-kill` IPC handler.

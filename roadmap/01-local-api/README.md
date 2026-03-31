@@ -51,6 +51,19 @@ Expose Wotch's internal capabilities through a localhost-only HTTP + WebSocket A
 9. Terminal buffer read returns the last N lines of xterm content for a given tab.
 10. Settings can be read and updated via the API, and changes are reflected in the UI immediately.
 
+## Dependency: Plan 0 (Claude Code Deep Integration)
+
+Plan 1 benefits significantly from Plan 0's structured integration channels. With Plan 0 in place:
+
+- **`/v1/status` endpoint** returns hook-sourced or bridge-sourced structured status instead of regex-guessed state. The response includes tool name, file path, and line number when available.
+- **WebSocket `claude:status` events** carry the enhanced status object (state + source + tool + file) rather than just a state string.
+- **`/v1/terminal/buffer` endpoint** can leverage the MCP server's terminal buffer reading infrastructure instead of implementing it from scratch.
+- **Real-time events** from hooks and bridge can be forwarded directly to API WebSocket subscribers with minimal transformation.
+
+If Plan 0 is not yet implemented, Plan 1 falls back to the existing regex-based status detection. All API contracts work either way — the response payloads simply have fewer fields.
+
+---
+
 ## Architecture Summary
 
 See `01-architecture.md` for the full design. In brief:
