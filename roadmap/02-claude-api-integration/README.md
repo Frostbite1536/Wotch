@@ -42,7 +42,7 @@ This plan adds a built-in chat panel to Wotch that connects directly to the Anth
 | `src/preload.js` | Add ~15 new IPC bridge methods under `window.wotch.claude.*` |
 | `src/renderer.js` | Add: chat panel state, message rendering, streaming display, model selector, context badges, cost counter, conversation list |
 | `src/index.html` | Add: chat panel HTML structure, CSS for chat UI (all 4 themes), markdown rendering styles |
-| `docs/INVARIANTS.md` | Add: INV-SEC-006 (credential encryption), INV-SEC-007 (API key never in renderer), INV-DATA-006 (usage file resilience) |
+| `docs/INVARIANTS.md` | Add: INV-SEC-014 (credential encryption), INV-SEC-015 (API key never in renderer), INV-DATA-006 (usage file resilience) |
 
 ### Files Created
 
@@ -99,6 +99,18 @@ This plan adds a built-in chat panel to Wotch that connects directly to the Anth
 | `@anthropic-ai/sdk` | `^0.39.0` | Anthropic Messages API client |
 
 No other new dependencies. Markdown rendering is implemented with a lightweight custom parser (no heavy library) to keep the bundle small. The `crypto` module (built into Node.js) handles key derivation when `safeStorage` is unavailable.
+
+---
+
+## Dependency: Plan 0 (Claude Code Deep Integration)
+
+Plan 2 benefits from Plan 0's MCP and bridge channels:
+
+- **Context sharing with running Claude Code sessions**: When a Claude Code instance is running in a Wotch terminal, the MCP tools already provide read access to terminal buffers, project info, and git status. The chat panel can access the same context via the existing IPC handlers.
+- **Status awareness**: Plan 0's hook receiver and status detector track Claude Code's activity state. The chat panel can check if Claude Code is actively working before the user sends a duplicate question.
+- **Infrastructure reuse**: Plan 0's integration patterns (IPC channels, settings management, localhost HTTP servers) establish conventions that Plan 2 follows for its own IPC handlers and credential storage.
+
+If Plan 0 is not yet implemented, Plan 2 operates as a standalone API client with no awareness of running Claude Code sessions. All features work — context injection just comes from Wotch's own terminal/git state rather than from Claude Code's bridge.
 
 ---
 

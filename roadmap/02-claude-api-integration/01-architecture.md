@@ -215,7 +215,7 @@ class ClaudeAPIManager {
   id: "conv-1711234567890",
   projectPath: "/home/user/my-app",
   projectName: "my-app",
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6-20250514",
   createdAt: "2026-03-28T10:00:00Z",
   updatedAt: "2026-03-28T10:05:00Z",
   messages: [
@@ -483,7 +483,7 @@ All new channels follow the `claude-*` prefix convention.
 | `claude-delete-conversation` | renderer→main | `invoke` | Delete a conversation |
 | `claude-new-conversation` | renderer→main | `invoke` | Start a new conversation |
 | `claude-get-usage` | renderer→main | `invoke` | Get usage/cost statistics |
-| `claude-set-budget` | renderer→main | `invoke` | Set daily spending limit |
+| `claude-set-budget` | renderer→main | `invoke` | Set monthly spending limit |
 
 ---
 
@@ -493,38 +493,34 @@ The Anthropic SDK supports streaming via async iterators. The main process handl
 
 ```javascript
 // In ClaudeAPIManager.sendMessage():
-const stream = await this.anthropic.messages.create({
-  model, system, messages, max_tokens: 4096, stream: true
-});
+this.currentAbortController = new AbortController();
 
-this.currentAbortController = stream.controller;
+const stream = this.anthropic.messages.stream({
+  model, system, messages, max_tokens: 4096,
+}, { signal: this.currentAbortController.signal });
 
 let fullText = "";
 
-for await (const event of stream) {
-  if (event.type === "content_block_delta") {
-    const chunk = event.delta.text;
-    fullText += chunk;
-    mainWindow.webContents.send("claude-stream-chunk", {
-      conversationId: this.activeConversationId,
-      chunk,
-      accumulated: fullText
-    });
-  }
+stream.on("text", (text) => {
+  fullText += text;
+  mainWindow.webContents.send("claude-stream-chunk", {
+    conversationId: this.activeConversationId,
+    chunk: text,
+    accumulated: fullText
+  });
+});
 
-  if (event.type === "message_stop") {
-    const usage = stream.finalMessage.usage;
-    mainWindow.webContents.send("claude-stream-end", {
-      conversationId: this.activeConversationId,
-      content: fullText,
-      usage: {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens
-      },
-      model
-    });
-  }
-}
+stream.on("finalMessage", (message) => {
+  mainWindow.webContents.send("claude-stream-end", {
+    conversationId: this.activeConversationId,
+    content: fullText,
+    usage: {
+      input_tokens: message.usage.input_tokens,
+      output_tokens: message.usage.output_tokens
+    },
+    model
+  });
+});
 ```
 
 The renderer batches DOM updates using `requestAnimationFrame` to prevent jank during fast streaming:

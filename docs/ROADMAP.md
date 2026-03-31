@@ -120,19 +120,60 @@
 
 ---
 
-## Phase 7: Future Ideas
+## Phase 7: Claude Code Deep Integration
+**Status:** In Progress
+**Goal:** Replace regex-based Claude Code detection with structured, first-party integration channels.
+
+### Features
+- [ ] Hook receiver for 24 Claude Code lifecycle events via `type: http` hooks
+- [ ] MCP server exposing Wotch tools to Claude Code (checkpoints, git status, notifications)
+- [ ] Enhanced multi-source status detector (hooks > regex fallback)
+- [ ] Auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP)
+- [ ] Rich pill status display ("Editing main.js" instead of "Working...")
+- [ ] Integration channel health display in settings (hooks/MCP indicators)
+
+### Success Criteria
+- Status detection has zero false positives when hooks are active
+- Claude Code can call `wotch_checkpoint` as an MCP tool
+- Graceful fallback to regex when hooks are unavailable
+
+### Details
+Full implementation plan: `roadmap/00-claude-code-deep-integration/`
+
+---
+
+## Phase 8: Future Ideas
 **Status:** Not Started
 **Goal:** Next round of improvements based on usage feedback.
 
 ### Candidates (unprioritized)
 - [ ] Split panes within a tab
-- [ ] Plugin/extension system
+- [ ] Plugin/extension system (see `roadmap/03-plugin-sdk/`)
 - [ ] Screen share protection mode (blur/hide terminal content)
 - [ ] Code signing for all platforms
 - [x] Terminal tabs reordering via drag
 - [x] SSH remote terminal connections (ssh2 library, connection profiles, host key verification)
 - [ ] Custom keyboard shortcut bindings
 - [ ] Session persistence (restore tabs on restart)
+- [ ] Wotch Local API for external tool access (see `roadmap/01-local-api/`)
+- [ ] Direct Claude API chat panel (see `roadmap/02-claude-api-integration/`)
+- [ ] Claude Agent SDK integration (see `roadmap/04-agent-sdk-integration/`)
+
+---
+
+---
+
+## Phase 2 Platform Roadmap
+
+Plans 1–4 extend Wotch into a programmable platform. These depend on Phase 7 (Deep Integration) for structured Claude Code communication. Full details in `roadmap/OVERVIEW.md`.
+
+| Plan | Name | Depends On | Status |
+|------|------|-----------|--------|
+| Plan 0 | Claude Code Deep Integration | — | Phase 7 |
+| Plan 1 | Wotch Local API | Plan 0 | Not Started |
+| Plan 2 | Direct Claude API Integration | Plan 1 | Not Started |
+| Plan 3 | Plugin/Extension SDK | Plans 1, 2 | Not Started |
+| Plan 4 | Claude Agent SDK Integration | Plans 1, 3 | Not Started |
 
 ---
 

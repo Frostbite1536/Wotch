@@ -152,7 +152,7 @@ const apiServer = new ApiServer({
   // State references (read-only for most)
   ptyProcesses,          // Map<tabId, ptyProcess>
   sshSessions,           // Map<tabId, sshSession>
-  claudeStatus,          // ClaudeStatusDetector instance
+  integrationManager,    // ClaudeIntegrationManager (wraps EnhancedClaudeStatusDetector + HookReceiver)
   mainWindow: () => mainWindow,  // Getter (window may be recreated)
 
   // Functions the API can call
@@ -176,16 +176,23 @@ The API needs to broadcast real-time events. Rather than modifying every emitter
 
 | Event Source | Hook Point | WebSocket Event |
 |---|---|---|
-| Claude status changes | `ClaudeStatusDetector.broadcast()` — add callback | `claude:status` |
+| Claude status changes | `integrationManager.on('status-changed')` — already emits per-tab events | `claude:status` |
 | Terminal output | `ptyProc.onData` / `sshStream.on('data')` — add callback | `terminal:output` |
 | PTY exit | `ptyProc.onExit` / `sshStream.on('close')` — add callback | `tab:closed` |
 | Settings change | `save-settings` IPC handler — add callback | `settings:changed` |
 | Git checkpoint | After `gitCheckpoint()` returns — explicit call | `git:checkpoint` |
 
-The cleanest way to hook these is to add an **event emitter** to the ApiServer and have `main.js` call `apiServer.broadcastEvent(type, payload)` at each hook point. This avoids modifying the internal logic of `ClaudeStatusDetector` or `createPty`.
+The cleanest way to hook these is to add an **event emitter** to the ApiServer and have `main.js` call `apiServer.broadcastEvent(type, payload)` at each hook point. This avoids modifying the internal logic of `createPty`.
+
+For Claude status, the `integrationManager` already emits `'status-changed'` events (added in Plan 0), so the API server can listen directly:
 
 ```javascript
-// Example hook in main.js, inside createPty():
+// Example: Claude status → API WebSocket (uses existing integrationManager event)
+integrationManager.on('status-changed', (tabId, status) => {
+  if (apiServer) apiServer.broadcastEvent('claude:status', { tabId, ...status });
+});
+
+// Example: Terminal output → API WebSocket (inside createPty())
 ptyProc.onData((data) => {
   // Existing: send to renderer
   mainWindow.webContents.send("pty-data", { tabId, data });
@@ -375,18 +382,16 @@ Two new fields in `DEFAULT_SETTINGS`:
 ```javascript
 const DEFAULT_SETTINGS = {
   // ... existing fields ...
-  apiEnabled: true,    // Whether the API server starts with the app
+  apiEnabled: false,   // Whether the API server starts with the app (opt-in for security)
   apiPort: 19519,      // Port to listen on (will try +1 through +10 on conflict)
 };
 ```
 
 ## Terminal Buffer Access
 
-The existing `ClaudeStatusDetector` maintains a 2000-char rolling buffer per tab (`tab.buffer`). For the API, we need more: the ability to read the last N lines of terminal output.
+Plan 0 implemented a terminal buffer read mechanism via IPC round-trip: the main process sends a `terminal-buffer-read` event to the renderer, which reads from the xterm.js `Terminal.buffer.active` and responds via `terminal-buffer-response`. This is already used by the MCP server's `wotch_terminal_buffer` tool.
 
-Strategy: Add a **second rolling buffer** to each PTY/SSH session, capped at 50KB (roughly 1000 lines of 50 chars). This buffer is append-only and trimmed from the front. The API reads from this buffer for `GET /v1/tabs/:tabId/buffer`.
-
-This buffer is stored on the ApiServer itself (not on the ClaudeStatusDetector) to maintain separation of concerns:
+The API server can reuse this same mechanism for `GET /v1/tabs/:tabId/buffer`. For higher-throughput API use, a second rolling buffer can be added to each PTY/SSH session, capped at 50KB (roughly 1000 lines of 50 chars). This buffer would be stored on the ApiServer itself:
 
 ```javascript
 // Inside ApiServer

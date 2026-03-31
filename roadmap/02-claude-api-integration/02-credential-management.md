@@ -246,7 +246,7 @@ class CredentialManager {
 
       // Make a minimal request to verify the key
       await client.messages.create({
-        model: "claude-haiku-4-20250514",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 1,
         messages: [{ role: "user", content: "hi" }],
       });
@@ -357,7 +357,7 @@ If a user moves their `~/.wotch/credentials` file to a different machine, it wil
 
 ## New Invariants
 
-### INV-SEC-006: API Key Encryption at Rest
+### INV-SEC-014: API Key Encryption at Rest
 
 The Anthropic API key must always be encrypted before writing to disk. It must never be stored in plaintext in any file. The `~/.wotch/credentials` file must contain only the encrypted (Base64-encoded) key, never the raw key.
 
@@ -365,7 +365,7 @@ The Anthropic API key must always be encrypted before writing to disk. It must n
 
 **Enforcement:** `CredentialManager.setKey()` always encrypts. No other code path writes to the credentials file.
 
-### INV-SEC-007: API Key Never in Renderer
+### INV-SEC-015: API Key Never in Renderer
 
 The decrypted API key must never be sent to the renderer process via IPC. The `getKey()` method must not have an IPC handler. The renderer can only check `hasKey()` (boolean) and call `setKey()`/`deleteKey()`/`validateKey()`.
 
@@ -439,11 +439,11 @@ In the settings overlay (`index.html`), add a new section after "Shell":
   </div>
   <div class="setting-row">
     <div>
-      <div class="setting-label">Daily budget</div>
-      <div class="setting-hint">Maximum daily API spend (USD)</div>
+      <div class="setting-label">Monthly budget</div>
+      <div class="setting-hint">Maximum monthly API spend (USD)</div>
     </div>
-    <input type="number" id="set-daily-budget" class="setting-input"
-           placeholder="No limit" min="0" step="0.50" style="width:80px;" />
+    <input type="number" id="set-monthly-budget" class="setting-input"
+           placeholder="No limit" min="0" step="1.00" style="width:80px;" />
   </div>
 </div>
 ```

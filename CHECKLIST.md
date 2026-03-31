@@ -45,6 +45,21 @@ Use this before merging any PR or accepting any AI-generated change.
 - [ ] Drag-to-resize works and persists
 - [ ] Drag-to-reorder tabs works without interruption from status updates
 
+## Claude Code Integration
+- [ ] Hook receiver starts on localhost:19520 (or next available port)
+- [ ] Hook receiver responds to POST /hook/PreToolUse with 200
+- [ ] MCP IPC server starts on localhost:19523
+- [ ] Integration settings section visible in settings panel
+- [ ] Hook/MCP toggle switches work and save
+- [ ] Channel health dots update (green when active)
+- [ ] "Reconfigure Hooks" button writes to ~/.claude/settings.json
+- [ ] "Re-register MCP" button writes to ~/.claude.json
+- [ ] Enhanced status detector shows tool-specific descriptions when hooks active
+- [ ] Regex fallback works when hooks are unavailable
+- [ ] INV-SEC-006: Hook receiver binds to 127.0.0.1 only
+- [ ] INV-SEC-007: MCP tools expose only read/additive operations
+- [ ] INV-SEC-008: MCP IPC server binds to 127.0.0.1 only
+
 ## Git
 - [ ] Commit messages are descriptive
 - [ ] No secrets, .env files, or node_modules committed

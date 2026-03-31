@@ -124,6 +124,81 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 
 **Enforcement:** `getTopOffset()` checks `HAS_NOTCH` and adjusts.
 
+### INV-SEC-006: Hook Receiver Localhost Binding
+The hook receiver HTTP server must bind to `127.0.0.1` only. It must never bind to `0.0.0.0` or any external interface.
+
+**Rationale:** The hook receiver accepts Claude Code lifecycle events. Binding to an external interface would allow remote attackers to inject fake hook events and manipulate status display.
+
+**Enforcement:** `HookReceiver` constructor hardcodes `'127.0.0.1'` in `server.listen()`. Code review.
+
+### INV-SEC-007: MCP Tools Must Not Expose Destructive Operations
+MCP tools exposed to Claude Code must never allow: file write/delete, shell command execution, git push/reset/rebase/force operations, settings modification, SSH credential access, or PTY write (typing into terminals).
+
+**Rationale:** Claude Code has full tool access. Exposing destructive operations via MCP would allow Claude to make irreversible changes to the user's system without explicit terminal interaction.
+
+**Enforcement:** Code review of `mcp-server.js` tool definitions. Only read operations and additive-only operations (checkpoint) are allowed.
+
+### INV-SEC-008: MCP IPC Server Localhost Binding
+The MCP IPC TCP server must bind to `127.0.0.1` only, same as INV-SEC-006.
+
+**Enforcement:** `MCPIPCServer` hardcodes `'127.0.0.1'` in `server.listen()`.
+
+### INV-SEC-009: API Localhost Binding
+The API server must bind exclusively to `127.0.0.1`. It must never listen on `0.0.0.0`, `::`, or any network interface. The `server.listen()` call must always specify `'127.0.0.1'` as the hostname.
+
+**Rationale:** Network-accessible API with bearer token auth (no TLS) would expose the token and all terminal data to network sniffers.
+
+**Enforcement:** Code review. The listen call must include the hostname parameter.
+
+### INV-SEC-010: API Token Storage Permissions
+The `~/.wotch/api-token` file must be written with mode `0o600` (owner read/write only). The token must never be logged, sent to the renderer (except via explicit `api-copy-token` IPC), or included in error messages.
+
+**Rationale:** The token is the sole authorization mechanism for the API. Exposure compromises all API-accessible data.
+
+**Enforcement:** Code review. Check `fs.writeFileSync` calls for the token file.
+
+### INV-SEC-011: DNS Rebinding Protection
+Every HTTP request and WebSocket upgrade must validate the `Host` header against a whitelist of localhost aliases (`localhost`, `127.0.0.1`, `[::1]`, with optional port). Requests with any other Host value must be rejected with 403 before any processing occurs.
+
+**Rationale:** DNS rebinding attacks can bypass the localhost binding by making the browser send requests to `127.0.0.1` with a malicious Host header.
+
+**Enforcement:** Code review. The validation function must run before routing, auth, and body parsing.
+
+### INV-SEC-012: API Token Comparison
+API token comparison must use `crypto.timingSafeEqual()`, not `===` or `.includes()`. This applies to both HTTP bearer token validation and WebSocket auth message validation.
+
+**Rationale:** Timing side-channels in string comparison can leak token bytes one at a time.
+
+**Enforcement:** Code review.
+
+### INV-SEC-013: No SSH Profile Exposure via API
+The API must never include `settings.sshProfiles` in any response or WebSocket event. The `GET /v1/settings` endpoint must strip it. The `PATCH /v1/settings` endpoint must reject it. The `settings:changed` WebSocket event must exclude it.
+
+**Rationale:** SSH profiles contain hostnames, usernames, and key file paths. Combined with terminal access, this could facilitate lateral movement by a compromised local process.
+
+**Enforcement:** Code review. Grep for `sshProfiles` in `api-server.js`.
+
+### INV-SEC-014: API Key Encryption at Rest
+The Anthropic API key must always be encrypted before writing to disk. It must never be stored in plaintext in any file. The `~/.wotch/credentials` file must contain only the encrypted (Base64-encoded) key, never the raw key. Uses Electron `safeStorage` (OS keychain) when available, falls back to AES-256-GCM with machine-derived key.
+
+**Rationale:** An API key stored in plaintext would be trivially stolen by any process with read access to the user's home directory.
+
+**Enforcement:** `CredentialManager.setKey()` always encrypts. No other code path writes to the credentials file. File mode is `0o600`.
+
+### INV-SEC-015: API Key Never in Renderer
+The decrypted API key must never be sent to the renderer process via IPC. The `getKey()` method has no IPC handler. The renderer can only check `hasKey()` (boolean) and call `setKey()`/`deleteKey()`/`validateKey()`.
+
+**Rationale:** The renderer is the less-trusted process (it renders terminal output that could theoretically be crafted). If the renderer had the API key, a compromised renderer could exfiltrate it.
+
+**Enforcement:** Code review of `preload.js` and IPC handlers. No IPC handler returns the decrypted key.
+
+### INV-DATA-006: Conversation Persistence Resilience
+If conversation JSON files in `~/.wotch/conversations/` are missing, corrupted, or contain invalid JSON, the app must handle gracefully — skip the file and continue. Loading conversations must never crash the app.
+
+**Rationale:** Conversation files may be corrupted by a crash during write, manually edited, or deleted by the user.
+
+**Enforcement:** try/catch around JSON.parse in all conversation loading code.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -133,3 +208,6 @@ On macOS, the pill Y position must account for notch/non-notch displays. Notch M
 | 2026-03-28 | INV-UX-002 | Updated for multi-monitor support | Pill can now target any display, falls back to primary on disconnect |
 | 2026-03-28 | INV-UX-002 | Updated for customizable position | Pill can sit on top, left, or right edge; uses workArea for accurate placement; clamps expanded panel to screen bounds |
 | 2026-03-28 | INV-SEC-005, INV-DATA-004, INV-DATA-005 | Added for SSH support | SSH credentials never persisted; SSH session map follows same cleanup pattern as PTY map; sshProfiles isolated from general settings saves |
+| 2026-03-31 | INV-SEC-006, INV-SEC-007, INV-SEC-008 | Added for Claude Code deep integration | Hook receiver and MCP IPC server localhost-only; MCP tools read-only + additive |
+| 2026-03-31 | INV-SEC-009 through INV-SEC-013 | Added for Local API | API localhost-only, token file permissions, DNS rebinding protection, timing-safe comparison, SSH profile redaction |
+| 2026-03-31 | INV-SEC-014, INV-SEC-015, INV-DATA-006 | Added for Claude API integration | API key encryption at rest, API key never in renderer, conversation persistence resilience |

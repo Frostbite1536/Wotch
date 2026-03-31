@@ -41,6 +41,7 @@ Wotch is an Electron desktop app that spawns real shell processes (via node-pty)
 | Local attacker | Another process on the same machine | Read settings file, inject into IPC, tamper with PTY |
 | Supply chain | Compromised npm dependency | Arbitrary code execution in main process |
 | Hostile SSH server | A server the user connects to via SSH | Send malicious terminal output, attempt credential theft via fake prompts |
+| Local network attacker | Process on localhost or adjacent network | Inject fake hook events to the hook receiver, connect to MCP IPC server |
 
 ## STRIDE Analysis
 
@@ -89,7 +90,17 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 
 ## Attack Surface
 
+### Spoofing (continued — Integration)
+
+| Threat | Risk | Mitigation |
+|--------|------|------------|
+| Fake hook events sent to localhost:19520 | Low | Hook receiver binds to 127.0.0.1 only (INV-SEC-006). Any local process can send events, but status display is UX-only, not a security control. Same trust model as terminal output spoofing. |
+| Rogue process connects to MCP IPC server (localhost:19523) | Low | Binds to 127.0.0.1 only (INV-SEC-008). MCP tools expose only read operations and additive-only checkpoint (INV-SEC-007). No destructive capability available. |
+| Claude Code configuration tampered with | Medium | Wotch writes to `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP). Same trust model as settings file — user-owned. Auto-configuration is idempotent and append-only (never overwrites existing hooks). |
+
 ### External Inputs
+- **Hook receiver HTTP endpoint** (localhost:19520, accepts JSON POST from Claude Code hooks)
+- **MCP IPC TCP server** (localhost:19523, accepts JSON-RPC from standalone MCP server script)
 - **Terminal output** (ANSI sequences, arbitrary text from commands)
 - **IDE configuration files** (JSON/XML read from known paths)
 - **Git repository state** (branch names, file paths, hook scripts)
@@ -122,7 +133,9 @@ Not applicable — Wotch is a single-user desktop app with no authentication or 
 - No remote content loading (INV-SEC-002)
 - Scoped preload bridge (INV-SEC-003)
 - Fixed git command templates; checkpoint uses `execFileSync` with argument arrays (INV-SEC-004)
-- Minimal runtime dependency count (7 packages)
+- Minimal runtime dependency count (9 packages)
+- Hook receiver and MCP IPC server bound to localhost only (INV-SEC-006, INV-SEC-008)
+- MCP tools limited to read + additive operations (INV-SEC-007)
 - SSH credentials never persisted to disk (INV-SEC-005)
 - SSH profiles isolated from general settings saves (INV-DATA-005)
 - SSH host key verification with known_hosts tracking

@@ -6,6 +6,21 @@ Phase 1 of Wotch delivered a complete floating terminal experience: hover-to-rev
 
 ---
 
+## Plan 0: Claude Code Deep Integration (NEW — Prerequisite)
+
+**Directory:** `00-claude-code-deep-integration/`
+
+Replace Wotch's heuristic regex-based Claude Code detection with structured, first-party integration using two channels: **hooks** (24 lifecycle events delivered via `type: http` hooks configured in `~/.claude/settings.json`) and **MCP** (Wotch as a tool server registered in `~/.claude.json`). This provides the reliable data foundation that all subsequent plans build upon.
+
+**Key deliverables:**
+- Hook receiver (HTTP server) for structured Claude Code lifecycle events (24 event types)
+- MCP server exposing Wotch tools (checkpoints, git status, notifications) to Claude Code
+- Enhanced multi-source status detector with hook priority and regex fallback
+- Auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP)
+- Settings UI for per-channel enable/disable and health monitoring
+
+---
+
 ## Plan 1: Wotch Local API
 
 **Directory:** `01-local-api/`
@@ -71,19 +86,24 @@ Embed the Claude Agent SDK to run custom AI agents natively inside Wotch. Agents
 
 ## Implementation Order
 
-The four plans have natural dependencies:
+The five plans have natural dependencies. Plan 0 is the new prerequisite that provides structured Claude Code communication for all subsequent plans:
 
 ```
-Plan 1 (Local API)  ──────────────────────────────────────┐
-   ↓                                                       │
-Plan 2 (Claude API) ── can use Local API for context ──────┤
-   ↓                                                       │
-Plan 3 (Plugin SDK) ── plugins consume Local API ──────────┤
-   ↓                                                       │
-Plan 4 (Agent SDK)  ── agents use Plugin SDK + Local API ──┘
+Plan 0 (Deep Integration) ─────────────────────────────────┐
+   ↓                                                        │
+   ├── hooks → structured status for Plan 1 API             │
+   └── MCP → tool access for Plans 2, 4                     │
+                                                            │
+Plan 1 (Local API)  ── exposes hook-sourced data ──────────┤
+   ↓                                                        │
+Plan 2 (Claude API) ── shares context via MCP ─────────────┤
+   ↓                                                        │
+Plan 3 (Plugin SDK) ── plugins subscribe to hook events ───┤
+   ↓                                                        │
+Plan 4 (Agent SDK)  ── coordinates via bridge + MCP ───────┘
 ```
 
-**Recommended sequence:** 1 → 2 → 3 → 4. Each plan is self-contained and can be merged independently, but later plans benefit from earlier infrastructure.
+**Recommended sequence:** 0 → 1 → 2 → 3 → 4. Plan 0 is the highest priority — it replaces regex heuristics with structured data, benefiting every subsequent plan. Each plan is self-contained and can be merged independently, but later plans benefit from earlier infrastructure.
 
 ---
 

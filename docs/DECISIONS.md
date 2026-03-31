@@ -84,6 +84,21 @@ Significant architectural and product decisions, recorded for future context.
 - Connection profiles (host, port, username, auth method, key path) are stored in `settings.sshProfiles`, managed via dedicated IPC handlers isolated from general settings saves.
 **Trade-off:** Adds `ssh2` as a runtime dependency (pure JS, no native bindings, well-maintained). Adds ~150 lines to main.js, ~200 lines to renderer.js, and ~100 lines of HTML/CSS. The transparent transport approach means Claude status detection, tab management, and xterm.js integration all work identically for SSH tabs.
 
+## 2026-03-31: Claude Code Deep Integration (Hooks-First Approach)
+
+**Decision:** Replace regex-based Claude Code status detection with structured integration using two channels: hooks (24 lifecycle events via `type: http` hooks) and MCP (Wotch as tool server). Hooks are the primary channel for status detection; MCP provides tool access in the reverse direction.
+**Context:** Analysis of Claude Code's architecture revealed that Claude Code exposes two structured integration surfaces usable by third-party tools: a hook system for lifecycle events (configured in `~/.claude/settings.json`) and MCP server support (configured in `~/.claude.json`). A third surface — the IDE bridge — exists but is proprietary (TCP with ephemeral lock-file auth, undocumented protocol, not designed for third parties). The existing regex-based detection in `ClaudeStatusDetector` is fragile (false positives on non-Claude output, missed transitions, invisible states like context compression and agent spawning). The hook system solves all of these issues with 24 event types delivered as JSON payloads.
+**Implementation:**
+- A `ClaudeIntegrationManager` coordinates two channels: `HookReceiver` (HTTP server on localhost:19520 receiving `type: http` hook payloads) and `WotchMCPServer` (stdio MCP server exposing Wotch tools, registered in `~/.claude.json`).
+- An `EnhancedClaudeStatusDetector` fuses data from hooks and regex fallback using priority-based resolution (hooks > regex).
+- Each channel is independently toggleable and degrades gracefully. With no channels active, the existing regex detector serves as fallback.
+- Hooks are configured as `type: http` entries in `~/.claude/settings.json` — Claude Code natively POSTs the hook's JSON payload to Wotch's HTTP endpoint. No curl or shell command intermediary needed.
+- MCP server entry is written to `~/.claude.json` with `"type": "stdio"` (auto-registration with user consent, never overwriting existing config).
+- New files: `src/hook-receiver.js`, `src/mcp-server.js`, `src/claude-integration-manager.js`, `src/enhanced-status-detector.js`.
+**Trade-off:** Adds 2 localhost servers (HTTP for hooks, TCP for MCP IPC) and 4 new source files (~700 lines). Port management complexity is minor (configurable with auto-fallback). The hook system's `type: http` support may not be available in very old Claude Code versions — mitigated by regex fallback. MCP protocol may evolve — mitigated by pinning SDK version.
+
+---
+
 ## 2026-03-28: claudeStatus.removeTab in pty-kill Handler
 
 **Decision:** Add `claudeStatus.removeTab(tabId)` to the `pty-kill` IPC handler.

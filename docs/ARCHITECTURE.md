@@ -30,6 +30,22 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 │  │ - recon. │                                        │
 │  └──────────┘                                        │
 │                                                      │
+│  ┌──────────────────────────────────────────────┐    │
+│  │      Claude Integration Manager              │    │
+│  │                                              │    │
+│  │  ┌─────────────┐  ┌──────────────────────┐  │    │
+│  │  │ Hook        │  │ Enhanced Status       │  │    │
+│  │  │ Receiver    │  │ Detector              │  │    │
+│  │  │ (HTTP:19520)│  │ (hooks > regex)       │  │    │
+│  │  └─────────────┘  └──────────────────────┘  │    │
+│  │                                              │    │
+│  │  ┌─────────────┐  ┌──────────────────────┐  │    │
+│  │  │ MCP IPC     │  │ Auto-Config          │  │    │
+│  │  │ Server      │  │ (hooks + MCP)        │  │    │
+│  │  │ (TCP:19523) │  │                      │  │    │
+│  │  └─────────────┘  └──────────────────────┘  │    │
+│  └──────────────────────────────────────────────┘    │
+│                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 │  │ Settings │  │ Git Ops  │  │ Project           │  │
 │  │ (~/.wotch│  │          │  │ Detection         │  │
@@ -81,7 +97,9 @@ Wotch is an Electron desktop app that provides a floating, notch-style terminal 
 | **Mouse Tracker** | Polls `screen.getCursorScreenPoint()` at configurable intervals. Detects hover-to-reveal zone with edge-slam activation (extends detection to the physical display edge for the pill's anchor side). Position-aware: adapts hover zones for top/left/right placement. Handles Wayland fallback (hotkey-only mode when cursor position is unavailable). |
 | **PTY Manager** | Spawns `node-pty` processes per tab. Routes data between PTY and renderer via IPC. Auto-detects shell (PowerShell/zsh/bash) per platform. |
 | **SSH Manager** | Manages `ssh2` Client connections per tab. Creates shell channels that produce the same byte stream as local PTYs, routed through the same `pty-data`/`pty-write`/`pty-resize` IPC channels. Handles host key verification (`~/.wotch/known_hosts.json`), credential prompting (password/passphrase via renderer dialog), and reconnection (auto for key auth, prompt for password auth). Connection profiles stored in `settings.sshProfiles`. |
-| **Claude Status Detector** | Class that parses ANSI-stripped terminal output against regex patterns to detect Claude Code's state (idle/thinking/working/waiting/done/error). Maintains per-tab state with idle timeouts. |
+| **Claude Status Detector** | Class that parses ANSI-stripped terminal output against regex patterns to detect Claude Code's state (idle/thinking/working/waiting/done/error). Maintains per-tab state with idle timeouts. Feeds into the Enhanced Status Detector as the regex fallback source. |
+| **Claude Integration Manager** | Central coordinator for Claude Code deep integration (`src/claude-integration-manager.js`). Manages two channels: Hook Receiver (HTTP server on localhost:19520 receiving structured lifecycle events from Claude Code's `type: http` hooks) and MCP IPC Server (TCP on localhost:19523, used by the standalone MCP server script). Contains the Enhanced Status Detector which fuses hook events (priority 1) with regex fallback (priority 2) for reliable status detection. Handles auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP server registration). |
+| **MCP Server** | Standalone Node.js script (`src/mcp-server.js`) launched by Claude Code via stdio transport. Exposes 8 tools (checkpoint, git status, git diff, project info, terminal buffer, notify, list tabs, tab status). Connects back to Wotch main process via the MCP IPC TCP server for data access. Registered in `~/.claude.json` with `"type": "stdio"`. |
 | **Project Detection** | Discovers projects from VS Code, JetBrains, Xcode, Visual Studio configs and common dev directories. Identifies projects by marker files (.git, package.json, Cargo.toml, etc.). |
 | **Git Operations** | Creates checkpoint commits (`wotch-checkpoint-*`), reads git status (branch, changed files, checkpoint count), and generates diffs for the diff viewer. Uses `execFileSync` for commit messages (injection-safe). |
 | **Settings Manager** | Reads/writes `~/.wotch/settings.json`. Merges with defaults on load. Settings include theme, display index, position (top/left/right), auto-launch, and all UI dimensions. |
@@ -105,6 +123,8 @@ Secure IPC bridge using `contextBridge.exposeInMainWorld`. Exposes the `window.w
 - Auto-update notifications
 - Display management
 - Window resize
+- Integration status (hooks/MCP health), hook reconfiguration, MCP re-registration
+- Terminal buffer read/response (for MCP server terminal buffer access)
 
 ### Renderer (`src/index.html` + `src/renderer.js`)
 
@@ -119,7 +139,7 @@ HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). C
 - **Command palette**: Ctrl+Shift+P fuzzy-filtered command overlay
 - **Themes**: Dark, light, purple, green presets via CSS custom property swapping
 - **Position handling**: Applies CSS position classes (`position-top`, `position-left`, `position-right`) to `<body>` for layout adaptation
-- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude), display selector, shell, SSH connection profiles
+- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude), display selector, shell, SSH connection profiles, Claude Code integration (hooks/MCP channel toggles, health indicators, reconfigure buttons)
 - **SSH UI**: Profile editor dialog, credential prompt (password/passphrase), host key verification dialog, new-tab menu with SSH profile quick-connect
 - **Drag to resize**: Bottom edge handle for live panel height adjustment (top position), side edge handle for width adjustment (left/right positions)
 
@@ -131,7 +151,9 @@ Position changed → save-settings IPC → main repositions window → send "pos
 User types in terminal → xterm.js onData → IPC "pty-write" → node-pty.write() OR ssh2 stream.write()
 PTY/SSH output → node-pty onData / ssh2 stream data → IPC "pty-data" → xterm.js write() + ClaudeStatusDetector.feed()
 SSH connect → renderer createTab(sshProfile) → IPC "ssh-connect" → ssh2 Client.connect() → shell channel → same pty-data path
-Claude status change → broadcast() → IPC "claude-status" → renderer updates pill dot/label
+Claude status change → broadcast() → feeds regex source → EnhancedStatusDetector resolves → IPC "claude-status" → renderer updates pill dot/label
+Claude Code hook → HTTP POST to localhost:19520 → HookReceiver → mapHookToStatus → feeds hooks source → EnhancedStatusDetector resolves (hooks priority > regex)
+Claude Code calls MCP tool → stdio to mcp-server.js → TCP to MCP IPC server → main process handler → response
 Ctrl+` pressed → globalShortcut → toggle() → expand or collapse
 Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands → return status
 ```
@@ -148,6 +170,8 @@ Ctrl+S pressed → renderer → IPC "git-checkpoint" → execSync git commands �
 | `@xterm/addon-web-links` | Clickable links | Makes URLs in terminal output clickable |
 | `electron-updater` | Auto-update | Checks GitHub Releases and installs updates on quit |
 | `ssh2` | SSH client | Pure-JS SSH2 client for remote terminal connections. No native bindings needed. |
+| `@modelcontextprotocol/sdk` | MCP server | Model Context Protocol SDK for exposing Wotch tools to Claude Code. Used by standalone `mcp-server.js`. |
+| `zod` | Schema validation | Runtime schema validation for MCP tool parameters. Required by MCP SDK. |
 
 ## Key Design Decisions
 

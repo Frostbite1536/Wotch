@@ -7,7 +7,7 @@ The context engine gathers relevant information from Wotch's existing subsystems
 ## Context Sources
 
 ### 1. Terminal Buffer
-- **Source:** Claude Status Detector's rolling buffer (2000 chars per tab)
+- **Source:** API server's rolling terminal buffer (50KB per tab, fed from PTY/SSH data handlers)
 - **What it provides:** Recent terminal output, errors, command results
 - **Typical size:** 500-2000 tokens
 - **Toggle:** `ctx-terminal` checkbox

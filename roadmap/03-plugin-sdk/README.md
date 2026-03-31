@@ -69,6 +69,18 @@ Registers a panel and commands for saving/inserting frequently used terminal com
 ### 6. Build Watcher
 Monitors terminal output for build errors/warnings and displays a summary panel with clickable file paths. Permissions: `terminal.read`, `ui.panels`. Contributions: `panels`, `statusDetectors`.
 
+## Dependency: Plan 0 (Claude Code Deep Integration)
+
+Plan 3 benefits from Plan 0's structured event system:
+
+- **Plugin event API**: Plugins can subscribe to structured hook events (`PreToolUse`, `PostToolUse`, `Stop`, `Notification`) via `wotch.events.onClaudeHook(callback)` instead of parsing terminal output with their own regex. This is the recommended approach for plugins that need to react to Claude Code activity.
+- **MCP-compatible plugins**: The plugin manifest can declare MCP tools, and the plugin host can register them with Claude Code via the existing MCP server infrastructure. A plugin that adds a "deploy" tool automatically becomes callable by Claude Code.
+- **MCP tool contributions**: The plugin manifest can declare MCP tools, and the plugin host can register them with Claude Code's MCP server infrastructure. A plugin that adds a "deploy" tool automatically becomes callable by Claude Code.
+
+If Plan 0 is not yet implemented, plugins fall back to the `wotch.terminal.onData()` API for raw terminal output access. All plugin capabilities work — they just have less structured Claude Code data to work with.
+
+---
+
 ## Document Index
 
 | Document | Description |

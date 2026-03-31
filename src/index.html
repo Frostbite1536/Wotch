@@ -304,6 +304,269 @@
       height: 100%;
     }
 
+    /* View toggle bar */
+    #view-toggle-bar {
+      display: flex;
+      gap: 0;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .view-toggle-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-size: 11px;
+      font-family: inherit;
+      padding: 5px 12px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .view-toggle-btn:hover { color: var(--text); }
+    .view-toggle-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    /* Chat panel */
+    #chat-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #chat-context-bar {
+      display: flex;
+      gap: 6px;
+      padding: 4px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .ctx-badge {
+      font-size: 10px;
+      color: var(--text-muted);
+      background: var(--accent-dim);
+      padding: 1px 6px;
+      border-radius: 3px;
+      cursor: pointer;
+      user-select: none;
+      transition: opacity 0.15s;
+    }
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 12px;
+      min-height: 0;
+    }
+    .chat-welcome {
+      text-align: center;
+      padding: 30px 20px;
+      color: var(--text-muted);
+    }
+    .chat-welcome-title {
+      font-size: 14px;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+    .chat-welcome-hint {
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .chat-msg {
+      margin-bottom: 10px;
+      max-width: 100%;
+    }
+    .chat-msg-user {
+      text-align: right;
+    }
+    .chat-msg-user .chat-bubble {
+      display: inline-block;
+      text-align: left;
+      background: var(--accent-dim);
+      color: var(--text);
+      border-radius: 8px 8px 2px 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      max-width: 85%;
+      word-wrap: break-word;
+    }
+    .chat-msg-assistant .chat-bubble {
+      display: inline-block;
+      text-align: left;
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--text);
+      border-radius: 8px 8px 8px 2px;
+      padding: 6px 10px;
+      font-size: 12px;
+      max-width: 95%;
+      word-wrap: break-word;
+      line-height: 1.5;
+    }
+    .chat-msg-assistant .chat-bubble code {
+      font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 11px;
+      background: rgba(148, 163, 184, 0.1);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .chat-msg-assistant .chat-bubble pre {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 4px;
+      padding: 8px;
+      margin: 6px 0;
+      overflow-x: auto;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .chat-msg-assistant .chat-bubble pre code {
+      background: none;
+      padding: 0;
+    }
+    .chat-msg-usage {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .chat-msg-error {
+      color: #f87171;
+      font-size: 11px;
+      padding: 6px 10px;
+      background: rgba(248, 113, 113, 0.1);
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    .chat-streaming-cursor::after {
+      content: '▋';
+      animation: blink-cursor 0.8s step-end infinite;
+      color: var(--accent);
+    }
+    @keyframes blink-cursor {
+      50% { opacity: 0; }
+    }
+    #chat-status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      font-size: 10px;
+    }
+    .chat-model-select {
+      background: var(--bg-solid);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-size: 10px;
+      padding: 1px 4px;
+      font-family: inherit;
+    }
+    .chat-cost {
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+    .chat-tokens {
+      color: var(--text-muted);
+    }
+    #chat-input-area {
+      display: flex;
+      gap: 6px;
+      padding: 6px 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      align-items: flex-end;
+    }
+    #chat-input {
+      flex: 1;
+      background: rgba(148, 163, 184, 0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12px;
+      font-family: inherit;
+      padding: 6px 8px;
+      resize: none;
+      max-height: 80px;
+      outline: none;
+    }
+    #chat-input:focus {
+      border-color: var(--accent);
+    }
+    .chat-send-btn {
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: none;
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .chat-send-btn:hover { opacity: 0.8; }
+    .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .chat-stop-btn { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+    #chat-conversation-bar {
+      display: flex;
+      gap: 4px;
+      padding: 3px 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .chat-conv-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-family: inherit;
+      cursor: pointer;
+      padding: 2px 6px;
+    }
+    .chat-conv-btn:hover { color: var(--text); }
+
+    #chat-history-overlay {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-solid);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+    }
+    .chat-history-item {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .chat-history-item:hover { background: var(--accent-dim); }
+    .chat-history-item .ch-date {
+      color: var(--text-muted);
+      font-size: 9px;
+    }
+    .chat-history-item .ch-preview {
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+    .chat-history-item .ch-meta {
+      color: var(--text-muted);
+      font-size: 9px;
+      margin-top: 1px;
+    }
+    .chat-history-delete {
+      float: right;
+      color: #f87171;
+      cursor: pointer;
+      font-size: 10px;
+      background: none;
+      border: none;
+      font-family: inherit;
+    }
+
     /* Bottom bar */
     #bottom-bar {
       display: flex;
@@ -1002,6 +1265,16 @@
     .settings-section {
       margin-bottom: 16px;
     }
+    .channel-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .channel-dot.active { background: var(--green); }
+    .channel-dot.inactive { background: var(--text-muted); opacity: 0.5; }
     .settings-section-title {
       font-size: 9px;
       text-transform: uppercase;
@@ -1160,6 +1433,12 @@
       </button>
     </div>
 
+    <!-- View toggle bar -->
+    <div id="view-toggle-bar">
+      <button class="view-toggle-btn active" id="btn-view-terminal" title="Terminal view">Terminal</button>
+      <button class="view-toggle-btn" id="btn-view-chat" title="Chat with Claude (Ctrl+Shift+L)">Chat</button>
+    </div>
+
     <div id="terminals">
       <div id="search-bar">
         <input type="text" id="search-input" placeholder="Search...">
@@ -1169,12 +1448,52 @@
       </div>
     </div>
 
+    <!-- Chat panel (hidden by default) -->
+    <div id="chat-panel" style="display:none;">
+      <div id="chat-context-bar">
+        <span class="ctx-badge" id="ctx-terminal" title="Terminal context">Term: --</span>
+        <span class="ctx-badge" id="ctx-git" title="Git status">Git: --</span>
+        <span class="ctx-badge" id="ctx-diff" title="Git diff">Diff: --</span>
+        <span class="ctx-badge" id="ctx-files" title="File tree">Files: --</span>
+      </div>
+      <div id="chat-messages">
+        <div id="chat-welcome" class="chat-welcome">
+          <div class="chat-welcome-title">Chat with Claude</div>
+          <div class="chat-welcome-hint">Ask about errors, code, or your project. Context from your terminal and git is automatically included.</div>
+        </div>
+      </div>
+      <div id="chat-status-bar">
+        <select id="chat-model-select" class="chat-model-select"></select>
+        <span id="chat-cost" class="chat-cost">$0.00</span>
+        <span id="chat-tokens" class="chat-tokens"></span>
+      </div>
+      <div id="chat-input-area">
+        <textarea id="chat-input" placeholder="Ask Claude about your code..." rows="1"></textarea>
+        <button id="btn-chat-send" class="chat-send-btn" title="Send (Enter)">Send</button>
+        <button id="btn-chat-stop" class="chat-send-btn chat-stop-btn" style="display:none;" title="Stop">Stop</button>
+      </div>
+      <div id="chat-conversation-bar">
+        <button id="btn-chat-new" class="chat-conv-btn" title="New conversation">+ New</button>
+        <button id="btn-chat-history" class="chat-conv-btn" title="Conversation history">History</button>
+      </div>
+    </div>
+
+    <!-- Chat history overlay -->
+    <div id="chat-history-overlay" style="display:none;">
+      <div class="settings-header">
+        <h2>Conversations</h2>
+        <button class="settings-close" id="btn-chat-history-close">&#x2715;</button>
+      </div>
+      <div id="chat-history-list" class="settings-body" style="padding:8px;"></div>
+    </div>
+
     <div id="bottom-bar">
       <div class="shortcuts" id="shortcuts-bar">
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+`</kbd><span>Toggle</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+S</kbd><span>Checkpoint</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+T</kbd><span>New Tab</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+F</kbd><span>Search</span></div>
+        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+L</kbd><span>Chat</span></div>
         <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+P</kbd><span>Commands</span></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
@@ -1309,6 +1628,99 @@
           <div class="settings-section-title">SSH Connections</div>
           <div id="ssh-profiles-list"></div>
           <button class="settings-reset-btn" id="btn-ssh-add" style="margin-top:8px;">+ Add SSH Connection</button>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Claude Code Integration</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="hooks-dot"></span>
+                Hooks (status events)
+              </div>
+            </div>
+            <button class="setting-toggle" id="set-hooks-enabled"></button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="mcp-dot"></span>
+                MCP Server (tool access)
+              </div>
+            </div>
+            <button class="setting-toggle" id="set-mcp-enabled"></button>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="settings-reset-btn" id="btn-reconfigure-hooks">Reconfigure Hooks</button>
+            <button class="settings-reset-btn" id="btn-reregister-mcp">Re-register MCP</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Local API</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">
+                <span class="channel-dot inactive" id="api-dot"></span>
+                Enable API Server
+              </div>
+            </div>
+            <button class="setting-toggle" id="set-api-enabled"></button>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Port</div></div>
+            <input type="number" class="setting-input" id="set-api-port" min="1024" max="65535" value="19519">
+          </div>
+          <div class="setting-row" id="api-token-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
+            <div class="setting-label">API Token</div>
+            <div style="display:flex;align-items:center;gap:6px;width:100%;">
+              <code id="api-token-display" style="flex:1;font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">---</code>
+              <button class="settings-reset-btn" id="btn-api-show-token" style="font-size:10px;">Show</button>
+              <button class="settings-reset-btn" id="btn-api-copy-token" style="font-size:10px;">Copy</button>
+              <button class="settings-reset-btn" id="btn-api-regen-token" style="font-size:10px;color:#f87171;">Regenerate</button>
+            </div>
+          </div>
+          <div id="api-status-info" style="font-size:10px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Claude API</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">API Key</div>
+              <div class="setting-hint" id="api-key-hint">Not configured</div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input type="password" id="set-api-key" class="setting-input" placeholder="sk-ant-..." style="width:200px;">
+              <button class="settings-reset-btn" id="btn-save-api-key">Save</button>
+              <button class="settings-reset-btn" id="btn-delete-api-key" style="display:none;color:#f87171;">Delete</button>
+            </div>
+          </div>
+          <div class="setting-row" id="api-key-status-row" style="display:none;">
+            <div><div class="setting-label">Status</div></div>
+            <div id="api-key-status" style="font-size:12px;"></div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Default model</div>
+              <div class="setting-hint">Model used for new conversations</div>
+            </div>
+            <select class="setting-input setting-input-wide" id="set-chat-default-model">
+              <option value="claude-sonnet-4-6-20250514">Claude Sonnet 4.6</option>
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+              <option value="claude-opus-4-6-20250514">Claude Opus 4.6</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Monthly budget</div>
+              <div class="setting-hint">Maximum monthly API spend (USD), 0 = unlimited</div>
+            </div>
+            <input type="number" class="setting-input" id="set-monthly-budget" placeholder="0" min="0" step="1" style="width:80px;">
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Usage this month</div>
+            </div>
+            <div id="api-usage-display" style="font-size:12px;color:var(--text-dim);">--</div>
+          </div>
         </div>
       </div>
       <div class="settings-footer">

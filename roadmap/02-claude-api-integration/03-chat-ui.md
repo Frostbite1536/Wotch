@@ -67,7 +67,7 @@ Lightweight inline renderer (no external dependency) supporting:
 |----------|--------|
 | `Enter` | Send message |
 | `Shift+Enter` | New line in input |
-| `Ctrl+L` / `Cmd+L` | Toggle chat view |
+| `Ctrl+Shift+L` / `Cmd+Shift+L` | Toggle chat view |
 | `Escape` | Switch back to terminal |
 
 ## Conversation History

@@ -385,7 +385,9 @@ If the request body contains `sshProfiles`, the server returns 422:
 
 Add these to `docs/INVARIANTS.md`:
 
-### INV-SEC-006: API Localhost Binding
+> **Note:** INV-SEC-006 through INV-SEC-008 are already assigned to Plan 0 (Hook Receiver Localhost Binding, MCP Tools Non-Destructive, MCP IPC Localhost Binding). Plan 1 invariants start at INV-SEC-009.
+
+### INV-SEC-009: API Localhost Binding
 
 The API server must bind exclusively to `127.0.0.1`. It must never listen on `0.0.0.0`, `::`, or any network interface. The `server.listen()` call must always specify `'127.0.0.1'` as the hostname.
 
@@ -393,7 +395,7 @@ The API server must bind exclusively to `127.0.0.1`. It must never listen on `0.
 
 **Enforcement:** Code review. The listen call must include the hostname parameter.
 
-### INV-SEC-007: API Token Storage Permissions
+### INV-SEC-010: API Token Storage Permissions
 
 The `~/.wotch/api-token` file must be written with mode `0o600` (owner read/write only). The token must never be logged, sent to the renderer (except via explicit `api-copy-token` IPC), or included in error messages.
 
@@ -401,7 +403,7 @@ The `~/.wotch/api-token` file must be written with mode `0o600` (owner read/writ
 
 **Enforcement:** Code review. Check `fs.writeFileSync` calls for the token file.
 
-### INV-SEC-008: DNS Rebinding Protection
+### INV-SEC-011: DNS Rebinding Protection
 
 Every HTTP request and WebSocket upgrade must validate the `Host` header against a whitelist of localhost aliases (`localhost`, `127.0.0.1`, `[::1]`, with optional port). Requests with any other Host value must be rejected with 403 before any processing occurs.
 
@@ -409,7 +411,7 @@ Every HTTP request and WebSocket upgrade must validate the `Host` header against
 
 **Enforcement:** Code review. The validation function must run before routing, auth, and body parsing.
 
-### INV-SEC-009: API Token Comparison
+### INV-SEC-012: API Token Comparison
 
 API token comparison must use `crypto.timingSafeEqual()`, not `===` or `.includes()`. This applies to both HTTP bearer token validation and WebSocket auth message validation.
 
@@ -417,7 +419,7 @@ API token comparison must use `crypto.timingSafeEqual()`, not `===` or `.include
 
 **Enforcement:** Code review.
 
-### INV-SEC-010: No SSH Profile Exposure via API
+### INV-SEC-013: No SSH Profile Exposure via API
 
 The API must never include `settings.sshProfiles` in any response or WebSocket event. The `GET /v1/settings` endpoint must strip it. The `PATCH /v1/settings` endpoint must reject it. The `settings:changed` WebSocket event must exclude it.
 
