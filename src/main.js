@@ -186,7 +186,7 @@ class CredentialManager {
       if (!this.fallbackKey) this.fallbackKey = deriveFallbackKey();
       encoded = encryptFallback(apiKey, this.fallbackKey);
     }
-    if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
     fs.writeFileSync(this.credentialsPath, encoded, { encoding: "utf-8", mode: 0o600 });
     this.cachedKey = apiKey;
   }
@@ -288,8 +288,8 @@ class TokenTracker {
 
   appendToLog(entry) {
     try {
-      if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true });
-      fs.appendFileSync(this.logPath, JSON.stringify(entry) + "\n");
+      if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(this.logPath, JSON.stringify(entry) + "\n", { mode: 0o600 });
     } catch (err) {
       console.log("[wotch] Failed to write usage log:", err.message);
     }
@@ -370,6 +370,10 @@ const AVAILABLE_MODELS = [
 
 function projectHash(projectPath) {
   return crypto.createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
+}
+
+function isValidConversationId(id) {
+  return typeof id === "string" && /^conv-\d+$/.test(id);
 }
 
 class ClaudeAPIManager {
@@ -630,6 +634,7 @@ class ClaudeAPIManager {
   }
 
   loadConversation(conversationId) {
+    if (!isValidConversationId(conversationId)) return null;
     // Check in-memory first
     if (this.conversations.has(conversationId)) {
       this.activeConversationId = conversationId;
@@ -642,6 +647,7 @@ class ClaudeAPIManager {
         const filePath = path.join(CONVERSATIONS_DIR, hash, `${conversationId}.json`);
         if (fs.existsSync(filePath)) {
           const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          if (!isValidConversationId(data.id)) continue;
           this.conversations.set(data.id, data);
           this.activeConversationId = data.id;
           return data;
@@ -652,6 +658,7 @@ class ClaudeAPIManager {
   }
 
   deleteConversation(conversationId) {
+    if (!isValidConversationId(conversationId)) return false;
     this.conversations.delete(conversationId);
     if (this.activeConversationId === conversationId) this.activeConversationId = null;
     try {
@@ -668,11 +675,11 @@ class ClaudeAPIManager {
   }
 
   _saveConversation(conv) {
-    if (!conv.projectPath) return;
+    if (!conv.projectPath || !isValidConversationId(conv.id)) return;
     try {
       const hash = projectHash(conv.projectPath);
       const dir = path.join(CONVERSATIONS_DIR, hash);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       // Cap at 100 messages
       if (conv.messages.length > 100) {
         conv.messages = conv.messages.slice(-100);
@@ -2549,6 +2556,16 @@ ipcMain.handle("claude-get-models", () => {
 ipcMain.handle("claude-send-message", async (_event, { tabId, projectPath, message, options }) => {
   if (!claudeAPIManager) return { success: false, error: "API manager not initialized" };
   if (!credentialManager.hasKey()) return { success: false, error: "No API key configured" };
+  // Input validation
+  if (typeof message !== "string" || !message.trim()) return { success: false, error: "Message is required" };
+  if (message.length > 100000) return { success: false, error: "Message too long (100K char limit)" };
+  // Validate model against allowlist
+  const validModelIds = AVAILABLE_MODELS.map((m) => m.id);
+  if (options?.model && !validModelIds.includes(options.model)) {
+    return { success: false, error: "Invalid model" };
+  }
+  // Reject if already streaming
+  if (claudeAPIManager.streaming) return { success: false, error: "Already streaming a response" };
   const sendToRenderer = (channel, data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, data);
@@ -2594,7 +2611,8 @@ ipcMain.handle("claude-get-usage", () => {
 });
 
 ipcMain.handle("claude-set-budget", (_event, { limit }) => {
-  settings.apiBudgetMonthly = limit || 0;
+  const val = parseFloat(limit);
+  settings.apiBudgetMonthly = (Number.isFinite(val) && val >= 0) ? val : 0;
   saveSettings(settings);
   return { success: true };
 });
