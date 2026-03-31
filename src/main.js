@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require("electron");
+const { app, BrowserWindow, globalShortcut, screen, ipcMain, Tray, Menu, nativeImage, Notification, dialog, safeStorage } = require("electron");
 const path = require("path");
 const pty = require("node-pty");
 const os = require("os");
@@ -87,6 +87,9 @@ const DEFAULT_SETTINGS = {
   // Local API
   apiEnabled: false,
   apiPort: 19519,
+  // Claude API chat
+  apiBudgetMonthly: 0,       // 0 = unlimited
+  chatDefaultModel: "claude-sonnet-4-6-20250514",
 };
 
 function loadSettings() {
@@ -115,6 +118,605 @@ function saveSettings(settings) {
 }
 
 let settings = loadSettings();
+
+// ── Claude API: Credential Manager ─────────────────────────────────
+const CREDENTIALS_PATH = path.join(SETTINGS_DIR, "credentials");
+const CONVERSATIONS_DIR = path.join(SETTINGS_DIR, "conversations");
+const USAGE_LOG_PATH = path.join(SETTINGS_DIR, "usage.json");
+
+function tryReadFile(filePath) {
+  try { return fs.readFileSync(filePath, "utf-8").trim(); } catch { return null; }
+}
+
+function deriveFallbackKey() {
+  const material = [
+    os.hostname(),
+    os.homedir(),
+    os.userInfo().username,
+    tryReadFile("/etc/machine-id") || "no-machine-id",
+  ].join("|");
+  return crypto.pbkdf2Sync(material, "wotch-credential-salt", 100000, 32, "sha256");
+}
+
+function encryptFallback(plaintext, key) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  const result = Buffer.alloc(1 + 16 + 16 + encrypted.length);
+  result[0] = 0x02;
+  iv.copy(result, 1);
+  authTag.copy(result, 17);
+  encrypted.copy(result, 33);
+  return result.toString("base64");
+}
+
+function decryptFallback(base64Data, key) {
+  const data = Buffer.from(base64Data, "base64");
+  if (data[0] !== 0x02) throw new Error("Unknown credential format");
+  const iv = data.subarray(1, 17);
+  const authTag = data.subarray(17, 33);
+  const ciphertext = data.subarray(33);
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+  return decipher.update(ciphertext, null, "utf8") + decipher.final("utf8");
+}
+
+class CredentialManager {
+  constructor(credentialsPath) {
+    this.credentialsPath = credentialsPath;
+    this.fallbackKey = null;
+    this.cachedKey = null;
+  }
+
+  hasKey() {
+    return fs.existsSync(this.credentialsPath);
+  }
+
+  setKey(apiKey) {
+    if (!apiKey || !apiKey.startsWith("sk-ant-")) {
+      throw new Error("Invalid API key format");
+    }
+    let encoded;
+    if (safeStorage.isEncryptionAvailable()) {
+      const encrypted = safeStorage.encryptString(apiKey);
+      encoded = encrypted.toString("base64");
+    } else {
+      console.log("[wotch] OS keychain unavailable, using fallback encryption");
+      if (!this.fallbackKey) this.fallbackKey = deriveFallbackKey();
+      encoded = encryptFallback(apiKey, this.fallbackKey);
+    }
+    if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    fs.writeFileSync(this.credentialsPath, encoded, { encoding: "utf-8", mode: 0o600 });
+    this.cachedKey = apiKey;
+  }
+
+  getKey() {
+    if (this.cachedKey) return this.cachedKey;
+    if (!this.hasKey()) return null;
+    try {
+      const raw = fs.readFileSync(this.credentialsPath, "utf-8");
+      const buf = Buffer.from(raw, "base64");
+      if (safeStorage.isEncryptionAvailable()) {
+        try {
+          this.cachedKey = safeStorage.decryptString(buf);
+          return this.cachedKey;
+        } catch { /* safeStorage failed, try fallback */ }
+      }
+      if (buf[0] === 0x02) {
+        if (!this.fallbackKey) this.fallbackKey = deriveFallbackKey();
+        this.cachedKey = decryptFallback(raw, this.fallbackKey);
+        return this.cachedKey;
+      }
+      console.log("[wotch] Cannot decrypt credentials — keychain unavailable");
+      return null;
+    } catch (err) {
+      console.log("[wotch] Failed to decrypt credentials:", err.message);
+      return null;
+    }
+  }
+
+  deleteKey() {
+    this.cachedKey = null;
+    try {
+      if (fs.existsSync(this.credentialsPath)) fs.unlinkSync(this.credentialsPath);
+    } catch (err) {
+      console.log("[wotch] Failed to delete credentials:", err.message);
+    }
+  }
+
+  async validateKey(apiKey) {
+    const key = apiKey || this.getKey();
+    if (!key) return { valid: false, error: "No API key provided" };
+    try {
+      const Anthropic = require("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: key });
+      await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "hi" }],
+      });
+      return { valid: true };
+    } catch (err) {
+      if (err.status === 401) return { valid: false, error: "Invalid API key" };
+      if (err.status === 403) return { valid: false, error: "API key lacks required permissions" };
+      return { valid: false, error: `Validation failed: ${err.message}` };
+    }
+  }
+
+  clearCache() {
+    this.cachedKey = null;
+  }
+}
+
+const credentialManager = new CredentialManager(CREDENTIALS_PATH);
+
+// ── Claude API: Token Tracker ──────────────────────────────────────
+const MODEL_PRICING = {
+  "claude-opus-4-6-20250514": { input: 15.0, output: 75.0 },
+  "claude-sonnet-4-6-20250514": { input: 3.0, output: 15.0 },
+  "claude-haiku-4-5-20251001": { input: 0.8, output: 4.0 },
+};
+
+class TokenTracker {
+  constructor(logPath) {
+    this.logPath = logPath;
+    this.sessionUsage = { inputTokens: 0, outputTokens: 0, cost: 0 };
+    this.conversationUsage = new Map();
+  }
+
+  calculateCost(model, inputTokens, outputTokens) {
+    const p = MODEL_PRICING[model] || MODEL_PRICING["claude-sonnet-4-6-20250514"];
+    return (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
+  }
+
+  recordUsage(conversationId, model, inputTokens, outputTokens) {
+    const cost = this.calculateCost(model, inputTokens, outputTokens);
+    this.sessionUsage.inputTokens += inputTokens;
+    this.sessionUsage.outputTokens += outputTokens;
+    this.sessionUsage.cost += cost;
+
+    const conv = this.conversationUsage.get(conversationId) || { inputTokens: 0, outputTokens: 0, cost: 0 };
+    conv.inputTokens += inputTokens;
+    conv.outputTokens += outputTokens;
+    conv.cost += cost;
+    this.conversationUsage.set(conversationId, conv);
+
+    this.appendToLog({ conversationId, model, inputTokens, outputTokens, cost, timestamp: Date.now() });
+    return { inputTokens, outputTokens, cost, sessionTotal: { ...this.sessionUsage } };
+  }
+
+  appendToLog(entry) {
+    try {
+      if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+      fs.appendFileSync(this.logPath, JSON.stringify(entry) + "\n");
+    } catch (err) {
+      console.log("[wotch] Failed to write usage log:", err.message);
+    }
+  }
+
+  getSessionTotals() {
+    return { ...this.sessionUsage };
+  }
+
+  getConversationTotals(conversationId) {
+    return this.conversationUsage.get(conversationId) || { inputTokens: 0, outputTokens: 0, cost: 0 };
+  }
+
+  getMonthlyTotals() {
+    try {
+      if (!fs.existsSync(this.logPath)) return { inputTokens: 0, outputTokens: 0, cost: 0 };
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      const lines = fs.readFileSync(this.logPath, "utf-8").trim().split("\n").filter(Boolean);
+      let inputTokens = 0, outputTokens = 0, cost = 0;
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.timestamp >= monthStart) {
+            inputTokens += entry.inputTokens || 0;
+            outputTokens += entry.outputTokens || 0;
+            cost += entry.cost || 0;
+          }
+        } catch { /* skip malformed lines */ }
+      }
+      return { inputTokens, outputTokens, cost };
+    } catch {
+      return { inputTokens: 0, outputTokens: 0, cost: 0 };
+    }
+  }
+}
+
+const tokenTracker = new TokenTracker(USAGE_LOG_PATH);
+
+// ── Claude API: Context Engine ─────────────────────────────────────
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+}
+
+function estimateTokens(text) {
+  // Rough estimate: ~4 chars per token for English text
+  return Math.ceil(text.length / 4);
+}
+
+function buildFileTree(dirPath, maxDepth, currentDepth = 0) {
+  if (currentDepth >= maxDepth) return [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const results = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      const indent = "  ".repeat(currentDepth);
+      if (entry.isDirectory()) {
+        results.push(`${indent}${entry.name}/`);
+        results.push(...buildFileTree(path.join(dirPath, entry.name), maxDepth, currentDepth + 1));
+      } else {
+        results.push(`${indent}${entry.name}`);
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+// ── Claude API: Conversation Manager ───────────────────────────────
+const AVAILABLE_MODELS = [
+  { id: "claude-sonnet-4-6-20250514", name: "Claude Sonnet 4.6", inputPrice: "$3/M", outputPrice: "$15/M" },
+  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", inputPrice: "$0.80/M", outputPrice: "$4/M" },
+  { id: "claude-opus-4-6-20250514", name: "Claude Opus 4.6", inputPrice: "$15/M", outputPrice: "$75/M" },
+];
+
+function projectHash(projectPath) {
+  return crypto.createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
+}
+
+class ClaudeAPIManager {
+  constructor(credentialManager, tokenTracker) {
+    this.credentialManager = credentialManager;
+    this.tokenTracker = tokenTracker;
+    this.anthropic = null;
+    this.activeConversationId = null;
+    this.conversations = new Map();
+    this.currentAbortController = null;
+    this.streaming = false;
+  }
+
+  _ensureClient() {
+    const key = this.credentialManager.getKey();
+    if (!key) throw new Error("No API key configured");
+    if (!this.anthropic) {
+      const Anthropic = require("@anthropic-ai/sdk");
+      this.anthropic = new Anthropic({ apiKey: key });
+    }
+    return this.anthropic;
+  }
+
+  _invalidateClient() {
+    this.anthropic = null;
+  }
+
+  newConversation(projectPath) {
+    const id = `conv-${Date.now()}`;
+    const conv = {
+      id,
+      projectPath: projectPath || null,
+      projectName: projectPath ? path.basename(projectPath) : null,
+      model: "claude-sonnet-4-6-20250514",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [],
+    };
+    this.conversations.set(id, conv);
+    this.activeConversationId = id;
+    return id;
+  }
+
+  async sendMessage(tabId, projectPath, userMessage, options, sendToRenderer) {
+    const client = this._ensureClient();
+    const model = options.model || "claude-sonnet-4-6-20250514";
+
+    // Ensure active conversation
+    if (!this.activeConversationId || !this.conversations.has(this.activeConversationId)) {
+      this.newConversation(projectPath);
+    }
+    const conv = this.conversations.get(this.activeConversationId);
+    conv.model = model;
+    conv.updatedAt = new Date().toISOString();
+
+    // Gather context
+    let systemPrompt = "You are Claude, an AI assistant helping a developer working in Wotch (a floating terminal for Claude Code).\n\n## Current Context\n";
+    const contextMeta = {};
+
+    if (options.contextSources?.terminal !== false && tabId) {
+      try {
+        const termBuf = this._getTerminalBuffer(tabId);
+        if (termBuf) {
+          const cleaned = stripAnsi(termBuf);
+          const lines = cleaned.split("\n");
+          const trimmed = lines.slice(-200);
+          systemPrompt += `\n### Recent Terminal Output\n\`\`\`\n${trimmed.join("\n")}\n\`\`\`\n`;
+          contextMeta.terminal = { lineCount: trimmed.length, estimatedTokens: estimateTokens(trimmed.join("\n")), enabled: true };
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (options.contextSources?.git !== false && projectPath) {
+      try {
+        const status = this._getGitStatus(projectPath);
+        if (status) {
+          systemPrompt += `\n### Git Status\nBranch: ${status.branch} | ${status.changedFiles} files changed | ${status.checkpoints || 0} checkpoints\n`;
+          contextMeta.git = { changedFiles: status.changedFiles, estimatedTokens: 50, enabled: true };
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (options.contextSources?.diff !== false && projectPath) {
+      try {
+        const diff = this._getGitDiff(projectPath);
+        if (diff && diff !== "(no changes)") {
+          const truncated = diff.length > 12000 ? diff.slice(0, 12000) + "\n... (truncated)" : diff;
+          systemPrompt += `\n### Git Diff (uncommitted changes)\n\`\`\`diff\n${truncated}\n\`\`\`\n`;
+          contextMeta.diff = { diffLines: truncated.split("\n").length, estimatedTokens: estimateTokens(truncated), enabled: true };
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (options.contextSources?.files !== false && projectPath) {
+      try {
+        const tree = buildFileTree(projectPath, 3);
+        if (tree.length > 0) {
+          const treeTruncated = tree.slice(0, 100);
+          const treeStr = treeTruncated.join("\n");
+          systemPrompt += `\n### Project Structure\n${path.basename(projectPath)}/\n${treeStr}\n`;
+          contextMeta.files = { fileCount: treeTruncated.length, estimatedTokens: estimateTokens(treeStr), enabled: true };
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Add user message to conversation
+    conv.messages.push({ role: "user", content: userMessage, timestamp: new Date().toISOString() });
+
+    // Build messages array for API (only role + content)
+    const apiMessages = conv.messages.map((m) => ({ role: m.role, content: m.content }));
+
+    // Start streaming
+    this.streaming = true;
+    this.currentAbortController = new AbortController();
+
+    try {
+      const stream = client.messages.stream({
+        model,
+        system: systemPrompt,
+        messages: apiMessages,
+        max_tokens: 4096,
+      }, { signal: this.currentAbortController.signal });
+
+      let fullText = "";
+
+      stream.on("text", (text) => {
+        fullText += text;
+        sendToRenderer("claude-stream-chunk", {
+          conversationId: this.activeConversationId,
+          chunk: text,
+          accumulated: fullText,
+        });
+      });
+
+      const finalMessage = await stream.finalMessage();
+      const usage = finalMessage.usage;
+
+      // Record usage
+      const usageResult = this.tokenTracker.recordUsage(
+        this.activeConversationId, model,
+        usage.input_tokens, usage.output_tokens
+      );
+
+      // Add assistant message to conversation
+      conv.messages.push({
+        role: "assistant",
+        content: fullText,
+        timestamp: new Date().toISOString(),
+        usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
+      });
+
+      // Persist conversation
+      this._saveConversation(conv);
+
+      sendToRenderer("claude-stream-end", {
+        conversationId: this.activeConversationId,
+        content: fullText,
+        usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
+        cost: usageResult.cost,
+        model,
+        contextMeta,
+      });
+
+      // Check budget
+      const budget = settings.apiBudgetMonthly || 0;
+      if (budget > 0) {
+        const monthly = this.tokenTracker.getMonthlyTotals();
+        if (monthly.cost >= budget) {
+          sendToRenderer("claude-budget-alert", { level: "exceeded", spent: monthly.cost, limit: budget });
+        } else if (monthly.cost >= budget * 0.8) {
+          sendToRenderer("claude-budget-alert", { level: "warning", spent: monthly.cost, limit: budget });
+        }
+      }
+
+      return { success: true };
+    } catch (err) {
+      if (err.name === "AbortError") {
+        sendToRenderer("claude-stream-error", { error: "Stream cancelled", code: "CANCELLED" });
+        return { success: false, error: "cancelled" };
+      }
+      const errMsg = err.status === 401 ? "Invalid API key" :
+        err.status === 429 ? "Rate limited — try again in a moment" :
+          err.message || "Unknown error";
+      sendToRenderer("claude-stream-error", { error: errMsg, code: err.status ? `HTTP_${err.status}` : "UNKNOWN" });
+      // Re-create client on auth error
+      if (err.status === 401) this._invalidateClient();
+      return { success: false, error: errMsg };
+    } finally {
+      this.streaming = false;
+      this.currentAbortController = null;
+    }
+  }
+
+  stopStream() {
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
+  }
+
+  _getTerminalBuffer(tabId) {
+    // Use API server's rolling buffer if available
+    if (apiServer && apiServer.terminalBuffers) {
+      const buf = apiServer.terminalBuffers.get(tabId);
+      if (buf) return buf.data;
+    }
+    return null;
+  }
+
+  _getGitStatus(projectPath) {
+    try {
+      const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: projectPath, encoding: "utf-8", timeout: 5000,
+      }).trim();
+      const status = execFileSync("git", ["status", "--porcelain"], {
+        cwd: projectPath, encoding: "utf-8", timeout: 5000,
+      }).trim();
+      const changedFiles = status ? status.split("\n").length : 0;
+      return { branch, changedFiles };
+    } catch {
+      return null;
+    }
+  }
+
+  _getGitDiff(projectPath) {
+    try {
+      return execFileSync("git", ["diff", "-U3"], {
+        cwd: projectPath, encoding: "utf-8", timeout: 10000, maxBuffer: 1024 * 1024,
+      }) || "(no changes)";
+    } catch {
+      return null;
+    }
+  }
+
+  getConversations(projectPath) {
+    if (!projectPath) return [];
+    const hash = projectHash(projectPath);
+    const dir = path.join(CONVERSATIONS_DIR, hash);
+    if (!fs.existsSync(dir)) return [];
+    try {
+      const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().reverse();
+      return files.map((f) => {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+          return {
+            id: data.id,
+            projectName: data.projectName,
+            model: data.model,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+            messageCount: data.messages?.length || 0,
+            firstMessage: data.messages?.[0]?.content?.slice(0, 80) || "",
+          };
+        } catch { return null; }
+      }).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  loadConversation(conversationId) {
+    // Check in-memory first
+    if (this.conversations.has(conversationId)) {
+      this.activeConversationId = conversationId;
+      return this.conversations.get(conversationId);
+    }
+    // Search on disk
+    try {
+      const dirs = fs.readdirSync(CONVERSATIONS_DIR);
+      for (const hash of dirs) {
+        const filePath = path.join(CONVERSATIONS_DIR, hash, `${conversationId}.json`);
+        if (fs.existsSync(filePath)) {
+          const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          this.conversations.set(data.id, data);
+          this.activeConversationId = data.id;
+          return data;
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  deleteConversation(conversationId) {
+    this.conversations.delete(conversationId);
+    if (this.activeConversationId === conversationId) this.activeConversationId = null;
+    try {
+      const dirs = fs.readdirSync(CONVERSATIONS_DIR);
+      for (const hash of dirs) {
+        const filePath = path.join(CONVERSATIONS_DIR, hash, `${conversationId}.json`);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          return true;
+        }
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  _saveConversation(conv) {
+    if (!conv.projectPath) return;
+    try {
+      const hash = projectHash(conv.projectPath);
+      const dir = path.join(CONVERSATIONS_DIR, hash);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      // Cap at 100 messages
+      if (conv.messages.length > 100) {
+        conv.messages = conv.messages.slice(-100);
+      }
+      fs.writeFileSync(path.join(dir, `${conv.id}.json`), JSON.stringify(conv, null, 2), { encoding: "utf-8", mode: 0o600 });
+    } catch (err) {
+      console.log("[wotch] Failed to save conversation:", err.message);
+    }
+  }
+
+  getContextMetadata(tabId, projectPath) {
+    const meta = {};
+    if (tabId) {
+      const termBuf = this._getTerminalBuffer(tabId);
+      if (termBuf) {
+        const cleaned = stripAnsi(termBuf);
+        const lines = cleaned.split("\n");
+        meta.terminal = { lineCount: lines.length, estimatedTokens: estimateTokens(cleaned), enabled: true };
+      } else {
+        meta.terminal = { lineCount: 0, estimatedTokens: 0, enabled: true };
+      }
+    }
+    if (projectPath) {
+      const status = this._getGitStatus(projectPath);
+      if (status) {
+        meta.git = { changedFiles: status.changedFiles, estimatedTokens: 50, enabled: true };
+      }
+      try {
+        const diff = this._getGitDiff(projectPath);
+        if (diff && diff !== "(no changes)") {
+          meta.diff = { diffLines: diff.split("\n").length, estimatedTokens: estimateTokens(diff), enabled: true };
+        }
+      } catch { /* ignore */ }
+      try {
+        const tree = buildFileTree(projectPath, 3);
+        meta.files = { fileCount: tree.length, estimatedTokens: estimateTokens(tree.join("\n")), enabled: true };
+      } catch { /* ignore */ }
+      meta.project = { name: path.basename(projectPath), path: projectPath };
+    }
+    return meta;
+  }
+}
+
+let claudeAPIManager = null;
 
 // ── Known hosts for SSH ────────────────────────────────────────────
 const KNOWN_HOSTS_FILE = path.join(SETTINGS_DIR, "known_hosts.json");
@@ -1766,6 +2368,7 @@ const ALLOWED_SETTING_KEYS = [
   "integrationHooksEnabled", "integrationMcpEnabled",
   "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
   "apiEnabled", "apiPort",
+  "apiBudgetMonthly", "chatDefaultModel",
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -1907,6 +2510,93 @@ ipcMain.handle("api-copy-token", () => {
 ipcMain.handle("api-regenerate-token", () => {
   if (!apiServer) return null;
   return apiServer.regenerateToken();
+});
+
+// ── Claude API IPC Handlers ─────────────────────────────────────────
+ipcMain.handle("claude-set-api-key", async (_event, { apiKey }) => {
+  try {
+    credentialManager.setKey(apiKey);
+    const validation = await credentialManager.validateKey(apiKey);
+    if (!validation.valid && validation.error === "Invalid API key") {
+      credentialManager.deleteKey();
+    }
+    // Invalidate the Anthropic client so it picks up the new key
+    if (claudeAPIManager) claudeAPIManager._invalidateClient();
+    return validation;
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+});
+
+ipcMain.handle("claude-validate-key", async () => {
+  return credentialManager.validateKey();
+});
+
+ipcMain.handle("claude-has-key", () => {
+  return credentialManager.hasKey();
+});
+
+ipcMain.handle("claude-delete-key", () => {
+  credentialManager.deleteKey();
+  if (claudeAPIManager) claudeAPIManager._invalidateClient();
+  return { success: true };
+});
+
+ipcMain.handle("claude-get-models", () => {
+  return AVAILABLE_MODELS;
+});
+
+ipcMain.handle("claude-send-message", async (_event, { tabId, projectPath, message, options }) => {
+  if (!claudeAPIManager) return { success: false, error: "API manager not initialized" };
+  if (!credentialManager.hasKey()) return { success: false, error: "No API key configured" };
+  const sendToRenderer = (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, data);
+    }
+  };
+  return claudeAPIManager.sendMessage(tabId, projectPath, message, options || {}, sendToRenderer);
+});
+
+ipcMain.on("claude-stop-stream", () => {
+  if (claudeAPIManager) claudeAPIManager.stopStream();
+});
+
+ipcMain.handle("claude-get-context", (_event, { tabId, projectPath }) => {
+  if (!claudeAPIManager) return {};
+  return claudeAPIManager.getContextMetadata(tabId, projectPath);
+});
+
+ipcMain.handle("claude-get-conversations", (_event, { projectPath }) => {
+  if (!claudeAPIManager) return [];
+  return claudeAPIManager.getConversations(projectPath);
+});
+
+ipcMain.handle("claude-load-conversation", (_event, { conversationId }) => {
+  if (!claudeAPIManager) return null;
+  return claudeAPIManager.loadConversation(conversationId);
+});
+
+ipcMain.handle("claude-delete-conversation", (_event, { conversationId }) => {
+  if (!claudeAPIManager) return false;
+  return claudeAPIManager.deleteConversation(conversationId);
+});
+
+ipcMain.handle("claude-new-conversation", (_event, { projectPath }) => {
+  if (!claudeAPIManager) return null;
+  return claudeAPIManager.newConversation(projectPath);
+});
+
+ipcMain.handle("claude-get-usage", () => {
+  return {
+    session: tokenTracker.getSessionTotals(),
+    monthly: tokenTracker.getMonthlyTotals(),
+  };
+});
+
+ipcMain.handle("claude-set-budget", (_event, { limit }) => {
+  settings.apiBudgetMonthly = limit || 0;
+  saveSettings(settings);
+  return { success: true };
 });
 
 // Terminal buffer read — used by MCP server to read xterm.js content
@@ -2129,6 +2819,9 @@ app.whenReady().then(() => {
     console.error("[wotch] Integration manager failed to start:", err.message);
   });
 
+  // ── Start Claude API Manager ──
+  claudeAPIManager = new ClaudeAPIManager(credentialManager, tokenTracker);
+
   // ── Start API Server ──
   createApiServer();
   if (settings.apiEnabled) {
@@ -2226,6 +2919,8 @@ app.on("will-quit", () => {
   clearInterval(idleCheckInterval);
   if (apiServer) apiServer.stop().catch(() => {});
   integrationManager.stop().catch(() => {});
+  credentialManager.clearCache();
+  if (claudeAPIManager) claudeAPIManager.stopStream();
   for (const [, p] of ptyProcesses) p.kill();
   ptyProcesses.clear();
   for (const [, s] of sshSessions) {

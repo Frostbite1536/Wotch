@@ -178,6 +178,27 @@ The API must never include `settings.sshProfiles` in any response or WebSocket e
 
 **Enforcement:** Code review. Grep for `sshProfiles` in `api-server.js`.
 
+### INV-SEC-014: API Key Encryption at Rest
+The Anthropic API key must always be encrypted before writing to disk. It must never be stored in plaintext in any file. The `~/.wotch/credentials` file must contain only the encrypted (Base64-encoded) key, never the raw key. Uses Electron `safeStorage` (OS keychain) when available, falls back to AES-256-GCM with machine-derived key.
+
+**Rationale:** An API key stored in plaintext would be trivially stolen by any process with read access to the user's home directory.
+
+**Enforcement:** `CredentialManager.setKey()` always encrypts. No other code path writes to the credentials file. File mode is `0o600`.
+
+### INV-SEC-015: API Key Never in Renderer
+The decrypted API key must never be sent to the renderer process via IPC. The `getKey()` method has no IPC handler. The renderer can only check `hasKey()` (boolean) and call `setKey()`/`deleteKey()`/`validateKey()`.
+
+**Rationale:** The renderer is the less-trusted process (it renders terminal output that could theoretically be crafted). If the renderer had the API key, a compromised renderer could exfiltrate it.
+
+**Enforcement:** Code review of `preload.js` and IPC handlers. No IPC handler returns the decrypted key.
+
+### INV-DATA-006: Conversation Persistence Resilience
+If conversation JSON files in `~/.wotch/conversations/` are missing, corrupted, or contain invalid JSON, the app must handle gracefully — skip the file and continue. Loading conversations must never crash the app.
+
+**Rationale:** Conversation files may be corrupted by a crash during write, manually edited, or deleted by the user.
+
+**Enforcement:** try/catch around JSON.parse in all conversation loading code.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -189,3 +210,4 @@ The API must never include `settings.sshProfiles` in any response or WebSocket e
 | 2026-03-28 | INV-SEC-005, INV-DATA-004, INV-DATA-005 | Added for SSH support | SSH credentials never persisted; SSH session map follows same cleanup pattern as PTY map; sshProfiles isolated from general settings saves |
 | 2026-03-31 | INV-SEC-006, INV-SEC-007, INV-SEC-008 | Added for Claude Code deep integration | Hook receiver and MCP IPC server localhost-only; MCP tools read-only + additive |
 | 2026-03-31 | INV-SEC-009 through INV-SEC-013 | Added for Local API | API localhost-only, token file permissions, DNS rebinding protection, timing-safe comparison, SSH profile redaction |
+| 2026-03-31 | INV-SEC-014, INV-SEC-015, INV-DATA-006 | Added for Claude API integration | API key encryption at rest, API key never in renderer, conversation persistence resilience |

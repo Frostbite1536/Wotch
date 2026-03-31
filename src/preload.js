@@ -113,6 +113,46 @@ contextBridge.exposeInMainWorld("wotch", {
   apiCopyToken: () => ipcRenderer.invoke("api-copy-token"),
   apiRegenerateToken: () => ipcRenderer.invoke("api-regenerate-token"),
 
+  // ── Claude API Chat ────────────────────────────────────────────
+  claude: {
+    setApiKey: (apiKey) => ipcRenderer.invoke("claude-set-api-key", { apiKey }),
+    validateKey: () => ipcRenderer.invoke("claude-validate-key"),
+    hasKey: () => ipcRenderer.invoke("claude-has-key"),
+    deleteKey: () => ipcRenderer.invoke("claude-delete-key"),
+    getModels: () => ipcRenderer.invoke("claude-get-models"),
+    sendMessage: (tabId, projectPath, message, options) =>
+      ipcRenderer.invoke("claude-send-message", { tabId, projectPath, message, options }),
+    stopStream: () => ipcRenderer.send("claude-stop-stream"),
+    onStreamChunk: (callback) => {
+      ipcRenderer.removeAllListeners("claude-stream-chunk");
+      ipcRenderer.on("claude-stream-chunk", (_e, data) => callback(data));
+    },
+    onStreamEnd: (callback) => {
+      ipcRenderer.removeAllListeners("claude-stream-end");
+      ipcRenderer.on("claude-stream-end", (_e, data) => callback(data));
+    },
+    onStreamError: (callback) => {
+      ipcRenderer.removeAllListeners("claude-stream-error");
+      ipcRenderer.on("claude-stream-error", (_e, data) => callback(data));
+    },
+    onBudgetAlert: (callback) => {
+      ipcRenderer.removeAllListeners("claude-budget-alert");
+      ipcRenderer.on("claude-budget-alert", (_e, data) => callback(data));
+    },
+    getContext: (tabId, projectPath) =>
+      ipcRenderer.invoke("claude-get-context", { tabId, projectPath }),
+    getConversations: (projectPath) =>
+      ipcRenderer.invoke("claude-get-conversations", { projectPath }),
+    loadConversation: (conversationId) =>
+      ipcRenderer.invoke("claude-load-conversation", { conversationId }),
+    deleteConversation: (conversationId) =>
+      ipcRenderer.invoke("claude-delete-conversation", { conversationId }),
+    newConversation: (projectPath) =>
+      ipcRenderer.invoke("claude-new-conversation", { projectPath }),
+    getUsage: () => ipcRenderer.invoke("claude-get-usage"),
+    setBudget: (limit) => ipcRenderer.invoke("claude-set-budget", { limit }),
+  },
+
   // Terminal buffer read (used by MCP server via main process)
   onTerminalBufferRead: (callback) => {
     ipcRenderer.removeAllListeners("terminal-buffer-read");

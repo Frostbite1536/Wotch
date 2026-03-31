@@ -712,6 +712,12 @@ document.addEventListener("keydown", (e) => {
     paletteOpen ? closePalette() : openPalette();
     return;
   }
+  // Ctrl+Shift+C — toggle chat
+  if (e.ctrlKey && e.shiftKey && e.key === "C") {
+    e.preventDefault();
+    if (chatView) switchToTerminal(); else switchToChat();
+    return;
+  }
   if (e.ctrlKey && e.key === "t") {
     e.preventDefault();
     createTab();
@@ -736,6 +742,7 @@ document.addEventListener("keydown", (e) => {
     else if (paletteOpen) closePalette();
     else if (searchOpen) closeSearch();
     else if (diffOverlay.classList.contains("open")) closeDiff();
+    else if (chatView && e.target.id !== "chat-input") switchToTerminal();
     else if (settingsOpen) closeSettings();
   }
   // Ctrl/Cmd+P to toggle pin (only when Shift not held, to avoid conflict with palette)
@@ -904,6 +911,11 @@ async function loadSettingsUI() {
     // API settings
     if (setApiEnabled) setApiEnabled.classList.toggle("on", s.apiEnabled || false);
     if (setApiPort) setApiPort.value = s.apiPort || 19519;
+    // Claude API settings
+    if (setChatDefaultModel) setChatDefaultModel.value = s.chatDefaultModel || "claude-sonnet-4-6-20250514";
+    if (setMonthlyBudget) setMonthlyBudget.value = s.apiBudgetMonthly || "";
+    checkApiKeyStatus();
+    refreshUsageDisplay();
     refreshIntegrationStatus();
   } catch { /* ignore */ }
 }
@@ -930,6 +942,7 @@ function debouncedSave() {
       integrationMcpEnabled: setMcpEnabled ? setMcpEnabled.classList.contains("on") : true,
       apiEnabled: setApiEnabled ? setApiEnabled.classList.contains("on") : false,
       apiPort: setApiPort ? parseInt(setApiPort.value) || 19519 : 19519,
+      chatDefaultModel: setChatDefaultModel ? setChatDefaultModel.value : "claude-sonnet-4-6-20250514",
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -1060,6 +1073,468 @@ if (btnApiRegenToken) {
       setTimeout(() => { btnApiRegenToken.textContent = "Regenerate"; }, 2000);
     }
   });
+}
+
+// ── Claude API Settings Wiring ──
+const setApiKeyInput = document.getElementById("set-api-key");
+const btnSaveApiKey = document.getElementById("btn-save-api-key");
+const btnDeleteApiKey = document.getElementById("btn-delete-api-key");
+const apiKeyHint = document.getElementById("api-key-hint");
+const apiKeyStatus = document.getElementById("api-key-status");
+const apiKeyStatusRow = document.getElementById("api-key-status-row");
+const setMonthlyBudget = document.getElementById("set-monthly-budget");
+const setChatDefaultModel = document.getElementById("set-chat-default-model");
+const apiUsageDisplay = document.getElementById("api-usage-display");
+
+async function checkApiKeyStatus() {
+  try {
+    const hasKey = await window.wotch.claude.hasKey();
+    if (hasKey) {
+      apiKeyHint.textContent = "API key is configured";
+      apiKeyHint.style.color = "var(--green)";
+      if (setApiKeyInput) { setApiKeyInput.placeholder = "••••••••••••"; setApiKeyInput.value = ""; }
+      if (btnDeleteApiKey) btnDeleteApiKey.style.display = "inline-block";
+    } else {
+      apiKeyHint.textContent = "Not configured";
+      apiKeyHint.style.color = "var(--text-muted)";
+      if (setApiKeyInput) setApiKeyInput.placeholder = "sk-ant-...";
+      if (btnDeleteApiKey) btnDeleteApiKey.style.display = "none";
+    }
+  } catch { /* ignore */ }
+}
+
+if (btnSaveApiKey) {
+  btnSaveApiKey.addEventListener("click", async () => {
+    const key = setApiKeyInput?.value?.trim();
+    if (!key) return;
+    btnSaveApiKey.textContent = "Validating...";
+    btnSaveApiKey.disabled = true;
+    try {
+      const result = await window.wotch.claude.setApiKey(key);
+      if (apiKeyStatusRow) apiKeyStatusRow.style.display = "flex";
+      if (result.valid) {
+        if (apiKeyStatus) { apiKeyStatus.textContent = "Valid — key saved"; apiKeyStatus.style.color = "var(--green)"; }
+        if (setApiKeyInput) setApiKeyInput.value = "";
+        showToast("API key saved and validated", "success");
+      } else {
+        if (apiKeyStatus) { apiKeyStatus.textContent = result.error; apiKeyStatus.style.color = "#f87171"; }
+      }
+    } catch (err) {
+      if (apiKeyStatus) { apiKeyStatus.textContent = err.message; apiKeyStatus.style.color = "#f87171"; }
+    }
+    btnSaveApiKey.textContent = "Save";
+    btnSaveApiKey.disabled = false;
+    checkApiKeyStatus();
+  });
+}
+
+if (btnDeleteApiKey) {
+  btnDeleteApiKey.addEventListener("click", async () => {
+    await window.wotch.claude.deleteKey();
+    checkApiKeyStatus();
+    if (apiKeyStatusRow) apiKeyStatusRow.style.display = "none";
+    showToast("API key deleted", "info");
+  });
+}
+
+if (setMonthlyBudget) {
+  setMonthlyBudget.addEventListener("change", async () => {
+    const limit = parseFloat(setMonthlyBudget.value) || 0;
+    await window.wotch.claude.setBudget(limit);
+  });
+}
+
+if (setChatDefaultModel) {
+  setChatDefaultModel.addEventListener("change", debouncedSave);
+}
+
+async function refreshUsageDisplay() {
+  try {
+    const usage = await window.wotch.claude.getUsage();
+    if (apiUsageDisplay) {
+      apiUsageDisplay.textContent = `$${usage.monthly.cost.toFixed(2)} (${usage.monthly.inputTokens.toLocaleString()} in / ${usage.monthly.outputTokens.toLocaleString()} out)`;
+    }
+  } catch { /* ignore */ }
+}
+
+// ── Chat Panel ──────────────────────────────────────────
+const chatPanel = document.getElementById("chat-panel");
+const terminalsContainer = document.getElementById("terminals");
+const viewToggleBar = document.getElementById("view-toggle-bar");
+const btnViewTerminal = document.getElementById("btn-view-terminal");
+const btnViewChat = document.getElementById("btn-view-chat");
+const chatMessages = document.getElementById("chat-messages");
+const chatWelcome = document.getElementById("chat-welcome");
+const chatInput = document.getElementById("chat-input");
+const btnChatSend = document.getElementById("btn-chat-send");
+const btnChatStop = document.getElementById("btn-chat-stop");
+const chatModelSelect = document.getElementById("chat-model-select");
+const chatCost = document.getElementById("chat-cost");
+const chatTokens = document.getElementById("chat-tokens");
+const ctxTerminal = document.getElementById("ctx-terminal");
+const ctxGit = document.getElementById("ctx-git");
+const ctxDiff = document.getElementById("ctx-diff");
+const ctxFiles = document.getElementById("ctx-files");
+const btnChatNew = document.getElementById("btn-chat-new");
+const btnChatHistory = document.getElementById("btn-chat-history");
+const chatHistoryOverlay = document.getElementById("chat-history-overlay");
+const chatHistoryList = document.getElementById("chat-history-list");
+const btnChatHistoryClose = document.getElementById("btn-chat-history-close");
+
+let chatView = false; // false = terminal, true = chat
+let chatStreaming = false;
+let chatSessionCost = 0;
+let chatPendingChunks = "";
+let chatRafScheduled = false;
+let chatAutoScroll = true;
+let chatCurrentBubble = null;
+
+// Populate model selector
+async function initChatModelSelector() {
+  try {
+    const models = await window.wotch.claude.getModels();
+    if (chatModelSelect) {
+      chatModelSelect.innerHTML = models.map((m) =>
+        `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)} (${escapeHtml(m.inputPrice)} in / ${escapeHtml(m.outputPrice)} out)</option>`
+      ).join("");
+      // Set default from settings
+      try {
+        const s = await window.wotch.getSettings();
+        if (s.chatDefaultModel) chatModelSelect.value = s.chatDefaultModel;
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+function switchToChat() {
+  chatView = true;
+  if (terminalsContainer) terminalsContainer.style.display = "none";
+  if (chatPanel) chatPanel.style.display = "flex";
+  if (btnViewTerminal) btnViewTerminal.classList.remove("active");
+  if (btnViewChat) btnViewChat.classList.add("active");
+  if (chatInput) chatInput.focus();
+  refreshContextBadges();
+}
+
+function switchToTerminal() {
+  chatView = false;
+  if (terminalsContainer) terminalsContainer.style.display = "";
+  if (chatPanel) chatPanel.style.display = "none";
+  if (btnViewTerminal) btnViewTerminal.classList.add("active");
+  if (btnViewChat) btnViewChat.classList.remove("active");
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (active) { active.fitAddon.fit(); active.term.focus(); }
+}
+
+if (btnViewTerminal) btnViewTerminal.addEventListener("click", switchToTerminal);
+if (btnViewChat) btnViewChat.addEventListener("click", switchToChat);
+
+async function refreshContextBadges() {
+  try {
+    const meta = await window.wotch.claude.getContext(activeTabId, currentProject?.path);
+    if (ctxTerminal) ctxTerminal.textContent = meta.terminal ? `Term: ${meta.terminal.lineCount} lines` : "Term: --";
+    if (ctxGit) ctxGit.textContent = meta.git ? `Git: ${meta.git.changedFiles} files` : "Git: --";
+    if (ctxDiff) ctxDiff.textContent = meta.diff ? `Diff: ${meta.diff.diffLines} lines` : "Diff: --";
+    if (ctxFiles) ctxFiles.textContent = meta.files ? `Files: ${meta.files.fileCount}` : "Files: --";
+  } catch { /* ignore */ }
+}
+
+// Simple markdown renderer
+function renderMarkdown(text) {
+  // Escape HTML
+  let html = escapeHtml(text);
+
+  // Code blocks (``` ... ```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    return `<pre><code class="lang-${lang}">${code.trim()}</code></pre>`;
+  });
+
+  // Inline code
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+  // Bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  // Line breaks
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
+}
+
+function addUserMessage(content) {
+  if (chatWelcome) chatWelcome.style.display = "none";
+  const div = document.createElement("div");
+  div.className = "chat-msg chat-msg-user";
+  div.innerHTML = `<div class="chat-bubble">${escapeHtml(content)}</div>`;
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function startAssistantMessage() {
+  const div = document.createElement("div");
+  div.className = "chat-msg chat-msg-assistant";
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble chat-streaming-cursor";
+  div.appendChild(bubble);
+  chatMessages.appendChild(div);
+  chatCurrentBubble = bubble;
+  chatAutoScroll = true;
+  return div;
+}
+
+function appendToAssistantMessage(text) {
+  if (!chatCurrentBubble) return;
+  chatPendingChunks += text;
+  if (!chatRafScheduled) {
+    chatRafScheduled = true;
+    requestAnimationFrame(() => {
+      if (chatCurrentBubble) {
+        // Get accumulated text from data attribute or empty
+        const accumulated = (chatCurrentBubble.dataset.accumulated || "") + chatPendingChunks;
+        chatCurrentBubble.dataset.accumulated = accumulated;
+        chatCurrentBubble.innerHTML = renderMarkdown(accumulated);
+        chatCurrentBubble.classList.add("chat-streaming-cursor");
+      }
+      chatPendingChunks = "";
+      chatRafScheduled = false;
+      // Auto-scroll
+      if (chatAutoScroll && chatMessages) {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+    });
+  }
+}
+
+function finalizeAssistantMessage(content, usage) {
+  if (chatCurrentBubble) {
+    chatCurrentBubble.innerHTML = renderMarkdown(content);
+    chatCurrentBubble.classList.remove("chat-streaming-cursor");
+    if (usage) {
+      const usageDiv = document.createElement("div");
+      usageDiv.className = "chat-msg-usage";
+      usageDiv.textContent = `${usage.input_tokens.toLocaleString()} in / ${usage.output_tokens.toLocaleString()} out`;
+      chatCurrentBubble.parentElement.appendChild(usageDiv);
+    }
+  }
+  chatCurrentBubble = null;
+  chatPendingChunks = "";
+  chatRafScheduled = false;
+}
+
+function showChatError(error) {
+  const div = document.createElement("div");
+  div.className = "chat-msg-error";
+  div.textContent = error;
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Detect scroll position for auto-scroll
+if (chatMessages) {
+  chatMessages.addEventListener("scroll", () => {
+    const atBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 30;
+    chatAutoScroll = atBottom;
+  });
+}
+
+async function sendChatMessage() {
+  const text = chatInput?.value?.trim();
+  if (!text || chatStreaming) return;
+
+  // Check if API key is configured
+  try {
+    const hasKey = await window.wotch.claude.hasKey();
+    if (!hasKey) {
+      showChatError("No API key configured. Go to Settings > Claude API to add your key.");
+      return;
+    }
+  } catch { /* ignore */ }
+
+  addUserMessage(text);
+  chatInput.value = "";
+  chatInput.style.height = "auto";
+
+  chatStreaming = true;
+  if (btnChatSend) btnChatSend.style.display = "none";
+  if (btnChatStop) btnChatStop.style.display = "";
+
+  const msgDiv = startAssistantMessage();
+
+  await window.wotch.claude.sendMessage(
+    activeTabId,
+    currentProject?.path || null,
+    text,
+    {
+      model: chatModelSelect?.value || "claude-sonnet-4-6-20250514",
+      contextSources: { terminal: true, git: true, diff: true, files: true },
+    }
+  );
+}
+
+// Stream handlers
+window.wotch.claude.onStreamChunk(({ chunk }) => {
+  appendToAssistantMessage(chunk);
+});
+
+window.wotch.claude.onStreamEnd(({ content, usage, cost, model }) => {
+  finalizeAssistantMessage(content, usage);
+  chatStreaming = false;
+  if (btnChatSend) btnChatSend.style.display = "";
+  if (btnChatStop) btnChatStop.style.display = "none";
+  if (cost !== undefined) {
+    chatSessionCost += cost;
+    if (chatCost) chatCost.textContent = `$${chatSessionCost.toFixed(4)}`;
+  }
+  if (usage && chatTokens) {
+    chatTokens.textContent = `${usage.input_tokens.toLocaleString()} in / ${usage.output_tokens.toLocaleString()} out`;
+  }
+  refreshContextBadges();
+});
+
+window.wotch.claude.onStreamError(({ error }) => {
+  if (chatCurrentBubble) {
+    chatCurrentBubble.classList.remove("chat-streaming-cursor");
+    if (!chatCurrentBubble.textContent) {
+      chatCurrentBubble.parentElement.remove();
+    }
+  }
+  chatCurrentBubble = null;
+  chatPendingChunks = "";
+  chatStreaming = false;
+  if (btnChatSend) btnChatSend.style.display = "";
+  if (btnChatStop) btnChatStop.style.display = "none";
+  if (error !== "Stream cancelled") {
+    showChatError(error);
+  }
+});
+
+window.wotch.claude.onBudgetAlert(({ level, spent, limit }) => {
+  if (level === "exceeded") {
+    showToast(`Budget exceeded: $${spent.toFixed(2)} / $${limit.toFixed(2)} this month`, "error");
+  } else {
+    showToast(`Budget warning: $${spent.toFixed(2)} / $${limit.toFixed(2)} this month (80%+)`, "info");
+  }
+});
+
+// Send button
+if (btnChatSend) btnChatSend.addEventListener("click", sendChatMessage);
+
+// Stop button
+if (btnChatStop) {
+  btnChatStop.addEventListener("click", () => {
+    window.wotch.claude.stopStream();
+  });
+}
+
+// Chat input: Enter to send, Shift+Enter for newline
+if (chatInput) {
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  // Auto-resize textarea
+  chatInput.addEventListener("input", () => {
+    chatInput.style.height = "auto";
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 80) + "px";
+  });
+}
+
+// New conversation
+if (btnChatNew) {
+  btnChatNew.addEventListener("click", async () => {
+    await window.wotch.claude.newConversation(currentProject?.path);
+    // Clear chat UI
+    chatMessages.innerHTML = "";
+    if (chatWelcome) {
+      chatWelcome.style.display = "";
+      chatMessages.appendChild(chatWelcome);
+    }
+    chatSessionCost = 0;
+    if (chatCost) chatCost.textContent = "$0.00";
+    if (chatTokens) chatTokens.textContent = "";
+    refreshContextBadges();
+  });
+}
+
+// Conversation history
+if (btnChatHistory) {
+  btnChatHistory.addEventListener("click", async () => {
+    if (!currentProject) { showToast("Select a project first", "error"); return; }
+    const convs = await window.wotch.claude.getConversations(currentProject.path);
+    if (chatHistoryList) {
+      if (convs.length === 0) {
+        chatHistoryList.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:16px;text-align:center;">No conversations yet</div>';
+      } else {
+        chatHistoryList.innerHTML = convs.map((c) => `
+          <div class="chat-history-item" data-id="${escapeHtml(c.id)}">
+            <button class="chat-history-delete" data-id="${escapeHtml(c.id)}" title="Delete">&#x2715;</button>
+            <div class="ch-date">${new Date(c.createdAt).toLocaleDateString()} ${new Date(c.createdAt).toLocaleTimeString()}</div>
+            <div class="ch-preview">${escapeHtml(c.firstMessage || "(empty)")}</div>
+            <div class="ch-meta">${c.messageCount} messages</div>
+          </div>
+        `).join("");
+        // Wire clicks
+        chatHistoryList.querySelectorAll(".chat-history-item").forEach((el) => {
+          el.addEventListener("click", async (e) => {
+            if (e.target.classList.contains("chat-history-delete")) return;
+            const conv = await window.wotch.claude.loadConversation(el.dataset.id);
+            if (conv) {
+              loadConversationUI(conv);
+              if (chatHistoryOverlay) chatHistoryOverlay.style.display = "none";
+            }
+          });
+        });
+        chatHistoryList.querySelectorAll(".chat-history-delete").forEach((btn) => {
+          btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            await window.wotch.claude.deleteConversation(btn.dataset.id);
+            btn.closest(".chat-history-item").remove();
+            if (chatHistoryList.querySelectorAll(".chat-history-item").length === 0) {
+              chatHistoryList.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:16px;text-align:center;">No conversations yet</div>';
+            }
+          });
+        });
+      }
+    }
+    if (chatHistoryOverlay) chatHistoryOverlay.style.display = "";
+  });
+}
+
+if (btnChatHistoryClose) {
+  btnChatHistoryClose.addEventListener("click", () => {
+    if (chatHistoryOverlay) chatHistoryOverlay.style.display = "none";
+  });
+}
+
+function loadConversationUI(conv) {
+  chatMessages.innerHTML = "";
+  if (chatWelcome) chatWelcome.style.display = "none";
+  for (const msg of conv.messages) {
+    if (msg.role === "user") {
+      addUserMessage(msg.content);
+    } else if (msg.role === "assistant") {
+      const div = document.createElement("div");
+      div.className = "chat-msg chat-msg-assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      bubble.innerHTML = renderMarkdown(msg.content);
+      div.appendChild(bubble);
+      if (msg.usage) {
+        const usageDiv = document.createElement("div");
+        usageDiv.className = "chat-msg-usage";
+        usageDiv.textContent = `${msg.usage.input_tokens.toLocaleString()} in / ${msg.usage.output_tokens.toLocaleString()} out`;
+        div.appendChild(usageDiv);
+      }
+      chatMessages.appendChild(div);
+    }
+  }
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (chatModelSelect && conv.model) chatModelSelect.value = conv.model;
 }
 
 // ── Terminal buffer read (for MCP server) ──
@@ -1449,6 +1924,18 @@ const COMMANDS = [
     if (setApiEnabled) setApiEnabled.classList.toggle("on", !s.apiEnabled);
     setTimeout(refreshIntegrationStatus, 1000);
   }},
+  { name: "Chat: Toggle Chat Panel", shortcut: "Ctrl+Shift+C", action: () => {
+    if (chatView) switchToTerminal(); else switchToChat();
+  }},
+  { name: "Chat: New Conversation", shortcut: "", action: async () => {
+    if (!chatView) switchToChat();
+    await window.wotch.claude.newConversation(currentProject?.path);
+    chatMessages.innerHTML = "";
+    if (chatWelcome) { chatWelcome.style.display = ""; chatMessages.appendChild(chatWelcome); }
+    chatSessionCost = 0;
+    if (chatCost) chatCost.textContent = "$0.00";
+    if (chatTokens) chatTokens.textContent = "";
+  }},
 ];
 
 function openPalette() {
@@ -1558,6 +2045,9 @@ paletteList.addEventListener("click", (e) => {
   window.wotch.onUpdateDownloaded?.((version) => {
     showToast(`Update v${version} ready — restart to install`, "success");
   });
+
+  // Initialize chat panel model selector
+  initChatModelSelector();
 
   try {
     detectedProjects = await window.wotch.detectProjects();
