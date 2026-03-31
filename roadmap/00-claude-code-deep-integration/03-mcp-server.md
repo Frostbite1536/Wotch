@@ -8,7 +8,7 @@ Wotch exposes itself as a Model Context Protocol (MCP) server, giving Claude Cod
 
 ## MCP Protocol Background
 
-The Model Context Protocol is an open standard for connecting AI assistants to external tools and data sources. Claude Code has built-in support for MCP servers configured in `~/.claude/settings.json`. An MCP server exposes:
+The Model Context Protocol is an open standard for connecting AI assistants to external tools and data sources. Claude Code has built-in support for MCP servers configured in `~/.claude.json` (user-level) or `.mcp.json` (project-level). An MCP server exposes:
 
 - **Tools**: Functions the AI can call (with JSON Schema input/output)
 - **Resources**: Data the AI can read (files, database records, etc.)
@@ -28,6 +28,7 @@ Claude Code launches the MCP server as a subprocess and communicates via stdin/s
 {
   "mcpServers": {
     "wotch": {
+      "type": "stdio",
       "command": "node",
       "args": ["/path/to/wotch/resources/mcp-server.js"],
       "env": {
@@ -43,14 +44,15 @@ The MCP server script (`mcp-server.js`) connects back to Wotch's main process vi
 **Pros**: No port management, no auth needed, Claude Code manages the lifecycle.
 **Cons**: Each Claude Code session spawns a new process; MCP server must connect to Wotch main process for data.
 
-### Option B: SSE (For external Claude Code instances)
+### Option B: HTTP (For external Claude Code instances)
 
-Wotch runs an SSE-based MCP endpoint that Claude Code connects to over HTTP.
+Wotch runs an HTTP-based MCP endpoint that Claude Code connects to over HTTP (streamable HTTP transport, replacing the deprecated SSE transport).
 
 ```json
 {
   "mcpServers": {
     "wotch": {
+      "type": "http",
       "url": "http://localhost:19522/mcp"
     }
   }
@@ -60,9 +62,11 @@ Wotch runs an SSE-based MCP endpoint that Claude Code connects to over HTTP.
 **Pros**: Single server instance, direct access to Wotch state.
 **Cons**: Requires port management and localhost binding.
 
+**Note**: SSE transport (`"type": "sse"`) is deprecated by the MCP specification. Use `"type": "http"` for remote/network transports.
+
 ### Recommendation
 
-Support both transports. Use stdio as the default for Claude Code running inside Wotch terminals. Offer SSE as a configurable option for advanced users running Claude Code externally.
+Support both transports. Use stdio as the default for Claude Code running inside Wotch terminals. Offer HTTP as a configurable option for advanced users running Claude Code externally.
 
 ---
 
@@ -464,18 +468,20 @@ When `integration.autoRegisterMCP` is enabled, Wotch adds itself to Claude Code'
 
 ```javascript
 function registerMCPServer(wotchPath, ipcPort) {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  let settings = {};
+  // MCP servers are configured in ~/.claude.json (NOT ~/.claude/settings.json)
+  const configPath = path.join(os.homedir(), '.claude.json');
+  let config = {};
 
   try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (e) { /* start fresh */ }
 
-  if (!settings.mcpServers) settings.mcpServers = {};
+  if (!config.mcpServers) config.mcpServers = {};
 
   // Only add if not already present
-  if (!settings.mcpServers.wotch) {
-    settings.mcpServers.wotch = {
+  if (!config.mcpServers.wotch) {
+    config.mcpServers.wotch = {
+      type: 'stdio',
       command: 'node',
       args: [path.join(wotchPath, 'resources', 'mcp-server.js')],
       env: {
@@ -483,17 +489,19 @@ function registerMCPServer(wotchPath, ipcPort) {
       }
     };
 
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   }
 }
 ```
+
+Alternatively, for project-level registration, write to `.mcp.json` in the project root.
 
 ### Safety Rules
 
 - Never overwrite existing MCP server configs
 - Idempotent: repeated calls produce the same result
 - The MCP server script path must resolve to Wotch's installed location
-- First-run prompts the user before modifying `~/.claude/settings.json`
+- First-run prompts the user before modifying `~/.claude.json`
 
 ---
 

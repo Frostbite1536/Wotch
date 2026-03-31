@@ -10,14 +10,13 @@ Phase 1 of Wotch delivered a complete floating terminal experience: hover-to-rev
 
 **Directory:** `00-claude-code-deep-integration/`
 
-Replace Wotch's heuristic regex-based Claude Code detection with structured, first-party integration using three channels discovered in Claude Code's architecture: **hooks** (lifecycle events), **MCP** (Wotch as a tool server), and **bridge** (bidirectional IDE protocol). This provides the reliable data foundation that all subsequent plans build upon.
+Replace Wotch's heuristic regex-based Claude Code detection with structured, first-party integration using two channels: **hooks** (24 lifecycle events delivered via `type: http` hooks configured in `~/.claude/settings.json`) and **MCP** (Wotch as a tool server registered in `~/.claude.json`). This provides the reliable data foundation that all subsequent plans build upon.
 
 **Key deliverables:**
-- Hook receiver (HTTP server) for structured Claude Code lifecycle events
+- Hook receiver (HTTP server) for structured Claude Code lifecycle events (24 event types)
 - MCP server exposing Wotch tools (checkpoints, git status, notifications) to Claude Code
-- Bridge adapter implementing Claude Code's IDE bridge protocol for real-time state sync
-- Enhanced multi-source status detector with priority-based fusion and regex fallback
-- Auto-configuration of Claude Code's `~/.claude/settings.json` for hooks and MCP registration
+- Enhanced multi-source status detector with hook priority and regex fallback
+- Auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP)
 - Settings UI for per-channel enable/disable and health monitoring
 
 ---
@@ -93,8 +92,7 @@ The five plans have natural dependencies. Plan 0 is the new prerequisite that pr
 Plan 0 (Deep Integration) ─────────────────────────────────┐
    ↓                                                        │
    ├── hooks → structured status for Plan 1 API             │
-   ├── MCP → tool access for Plans 2, 4                     │
-   └── bridge → state sync for Plans 3, 4                   │
+   └── MCP → tool access for Plans 2, 4                     │
                                                             │
 Plan 1 (Local API)  ── exposes hook-sourced data ──────────┤
    ↓                                                        │

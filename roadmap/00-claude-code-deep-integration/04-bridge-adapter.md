@@ -1,429 +1,160 @@
-# Plan 0: Bridge Adapter
+# Plan 0: IDE Integration & Bridge Adapter
 
 ## Overview
 
-Claude Code includes a bidirectional IDE bridge system designed for VS Code and JetBrains integration. Wotch implements the client side of this protocol, positioning itself as another "IDE" that Claude Code communicates with. The bridge enables the richest integration channel: real-time state synchronization, context provision, and command routing.
+Claude Code integrates with IDEs (VS Code, JetBrains) via a **built-in IDE MCP server** — a proprietary TCP-based server with ephemeral lock-file authentication. This is NOT a public protocol that third-party tools can implement directly.
+
+This document describes what the IDE integration actually is, what Wotch can and cannot do with it, and the alternative strategy Wotch uses instead.
 
 ---
 
-## Bridge Protocol Background
-
-Claude Code's bridge system (`src/bridge/` in the source) operates as follows:
-
-1. **Discovery**: When Claude Code starts, it checks for a bridge configuration file or environment variable indicating a bridge client is available.
-2. **Connection**: Claude Code connects to the bridge client's WebSocket endpoint (or the client connects to Claude Code's endpoint, depending on the transport).
-3. **Handshake**: Both sides exchange capabilities and version information.
-4. **Message exchange**: JSON messages flow bidirectionally for state updates, context requests, and commands.
-
-### Discovery Mechanism
-
-Claude Code discovers bridge clients through:
-
-- **Environment variable**: `CLAUDE_BRIDGE_PORT` — set in the PTY environment when launching Claude Code in a Wotch tab
-- **Configuration file**: `~/.claude/bridge.json` — persistent configuration for bridge endpoints
-
-Wotch uses the environment variable approach since it controls the PTY environment:
-
-```javascript
-// In main.js, when creating a PTY for Claude Code:
-const pty = nodePty.spawn(shell, args, {
-  env: {
-    ...process.env,
-    CLAUDE_BRIDGE_PORT: String(bridgePort),
-    WOTCH_TAB_ID: tabId
-  }
-});
-```
-
----
-
-## Bridge Message Protocol
-
-### Message Format
-
-All bridge messages are JSON objects with a `type` field and optional `data` payload:
-
-```typescript
-interface BridgeMessage {
-  type: string;
-  id?: string;          // For request-response pairs
-  data?: any;           // Type-specific payload
-  timestamp?: number;   // Unix ms
-}
-```
-
-### Message Types: Claude Code → Wotch
-
-| Type | Description | Data |
-|------|-------------|------|
-| `handshake` | Initial connection setup | `{ version, capabilities }` |
-| `state_update` | Claude Code's current state | `{ status, tool?, file?, line? }` |
-| `tool_start` | Tool execution beginning | `{ tool, input }` |
-| `tool_end` | Tool execution complete | `{ tool, output, duration }` |
-| `conversation_update` | Conversation context changed | `{ messageCount, tokenUsage }` |
-| `file_changed` | Claude Code modified a file | `{ path, changeType }` |
-| `context_request` | Claude Code wants context | `{ requestId, contextType }` |
-| `error` | Error notification | `{ message, code }` |
-
-### Message Types: Wotch → Claude Code
-
-| Type | Description | Data |
-|------|-------------|------|
-| `handshake_response` | Acknowledge connection | `{ clientName: "wotch", version, capabilities }` |
-| `context_response` | Provide requested context | `{ requestId, context }` |
-| `command` | Execute a command | `{ command, args }` |
-| `focus_file` | Request Claude Code to focus a file | `{ path, line? }` |
-
----
-
-## Wotch Bridge Adapter Implementation
+## What the IDE Integration Actually Is
 
 ### Architecture
 
-```
-┌─────────────────────────────────────┐
-│         Bridge Adapter              │
-│                                     │
-│  ┌─────────────┐  ┌─────────────┐  │
-│  │  WS Server  │  │  Protocol   │  │
-│  │  (:19521)   │──│  Handler    │  │
-│  └─────────────┘  └──────┬──────┘  │
-│                          │          │
-│  ┌─────────────┐  ┌──────┴──────┐  │
-│  │  Context    │  │  State      │  │
-│  │  Provider   │  │  Tracker    │  │
-│  └─────────────┘  └─────────────┘  │
-└─────────────────────────────────────┘
-```
+Claude Code's IDE integration consists of:
 
-### Implementation
+1. **A built-in MCP server** running over **TCP** on `127.0.0.1` using a **random high port**
+2. **Ephemeral authentication**: Each IDE extension activation generates a fresh random auth token, written to a lock file in `~/.claude/ide/` with `0600` permissions in a `0700` directory
+3. **Platform-specific discovery**:
+   - VS Code: The extension launches a local MCP server; the CLI finds it automatically
+   - JetBrains: The plugin runs `claude` from the IDE's integrated terminal, which detects the IDE context
 
-```javascript
-// src/bridge-adapter.js
-const WebSocket = require('ws');
-const { EventEmitter } = require('events');
+### What It Exposes
 
-class BridgeAdapter extends EventEmitter {
-  constructor(port = 19521) {
-    super();
-    this.port = port;
-    this.wss = null;
-    this.connections = new Map(); // tabId -> ws
-    this.states = new Map();     // tabId -> latest state
-    this.connected = false;
-  }
+The IDE MCP server exposes only **2 user-visible tools**:
 
-  start() {
-    this.wss = new WebSocket.Server({
-      port: this.port,
-      host: '127.0.0.1'
-    });
+| Tool | Description |
+|------|-------------|
+| `mcp__ide__getDiagnostics` | Read-only language-server diagnostics |
+| `mcp__ide__executeCode` | Run Python code in Jupyter notebooks (with user confirmation) |
 
-    this.wss.on('connection', (ws, req) => {
-      this._handleConnection(ws, req);
-    });
+Internal RPC methods (opening diffs, reading selections, saving files) exist but are **filtered out** before the tool list reaches Claude.
 
-    this.wss.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        this.port++;
-        if (this.port < 19530) {
-          this.wss = new WebSocket.Server({ port: this.port, host: '127.0.0.1' });
-        }
-      }
-    });
-  }
+### Why Wotch Cannot Implement This
 
-  stop() {
-    for (const [, ws] of this.connections) {
-      ws.close();
-    }
-    if (this.wss) this.wss.close();
-  }
-
-  isConnected() {
-    return this.connections.size > 0;
-  }
-
-  getState(tabId) {
-    return this.states.get(tabId) || null;
-  }
-
-  // Send a context response to Claude Code
-  sendContext(tabId, requestId, context) {
-    const ws = this.connections.get(tabId);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'context_response',
-        id: requestId,
-        data: { requestId, context }
-      }));
-    }
-  }
-
-  // Send a command to Claude Code
-  sendCommand(tabId, command, args) {
-    const ws = this.connections.get(tabId);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'command',
-        data: { command, args }
-      }));
-    }
-  }
-
-  _handleConnection(ws, req) {
-    let tabId = null;
-
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-
-        switch (msg.type) {
-          case 'handshake':
-            tabId = this._resolveTabId(msg);
-            this.connections.set(tabId, ws);
-            ws.send(JSON.stringify({
-              type: 'handshake_response',
-              data: {
-                clientName: 'wotch',
-                version: '1.0.0',
-                capabilities: ['state_tracking', 'context_provision', 'notifications']
-              }
-            }));
-            this.connected = true;
-            this.emit('connected', tabId);
-            break;
-
-          case 'state_update':
-            if (tabId) {
-              this.states.set(tabId, msg.data);
-              this.emit('state-update', { tabId, state: msg.data });
-            }
-            break;
-
-          case 'tool_start':
-            if (tabId) {
-              this.emit('tool-start', { tabId, ...msg.data });
-            }
-            break;
-
-          case 'tool_end':
-            if (tabId) {
-              this.emit('tool-end', { tabId, ...msg.data });
-            }
-            break;
-
-          case 'context_request':
-            if (tabId) {
-              this.emit('context-request', {
-                tabId,
-                requestId: msg.data.requestId,
-                contextType: msg.data.contextType
-              });
-            }
-            break;
-
-          case 'file_changed':
-            if (tabId) {
-              this.emit('file-changed', { tabId, ...msg.data });
-            }
-            break;
-
-          default:
-            // Unknown message type — log and ignore
-            break;
-        }
-      } catch (e) {
-        // Malformed message — ignore
-      }
-    });
-
-    ws.on('close', () => {
-      if (tabId) {
-        this.connections.delete(tabId);
-        this.states.delete(tabId);
-        this.emit('disconnected', tabId);
-        if (this.connections.size === 0) {
-          this.connected = false;
-        }
-      }
-    });
-  }
-
-  _resolveTabId(handshake) {
-    // Try to extract tab ID from handshake data or connection metadata
-    return handshake.data?.tabId || `bridge-${Date.now()}`;
-  }
-}
-
-module.exports = { BridgeAdapter };
-```
+| Constraint | Impact |
+|-----------|--------|
+| Random port with lock-file discovery | No stable endpoint to connect to |
+| Ephemeral per-activation auth tokens | No way to authenticate without file access to `~/.claude/ide/` |
+| No public protocol specification | Wire protocol is undocumented and proprietary |
+| Internal tools are hidden | Rich state data (tool use, files, context) is in hidden internal RPC, not exposed tools |
+| Not designed for third parties | The extension integration is tightly coupled to VS Code/JetBrains |
 
 ---
 
-## Context Provision
+## Wotch's Alternative: Hooks as the "Bridge"
 
-When Claude Code sends a `context_request`, Wotch responds with relevant context from its existing data sources.
+The original Plan 0 proposed a three-channel model (hooks + MCP + bridge). With the bridge channel not feasible, Wotch operates on a **two-channel model**:
 
-### Supported Context Types
+1. **Hooks** (Claude Code → Wotch): Structured lifecycle events via HTTP hooks
+2. **MCP** (Wotch → Claude Code): Tool access via MCP server
 
-| Context Type | Data Provided | Source |
-|-------------|---------------|--------|
-| `workspace` | Project path, name, type, detected IDE | `detectProjects()` |
-| `git` | Branch, changed files, checkpoint count, recent diff | `gitGetStatus()`, `gitGetDiff()` |
-| `terminal` | Last N lines of terminal output | xterm.js buffer |
-| `tabs` | Open tabs, their status, connection types | `ptyProcesses` map |
-| `settings` | Relevant Wotch settings (non-sensitive) | `settings` object |
+The good news is that Claude Code's **24 hook events** provide most of what the bridge was supposed to deliver:
 
-### Context Request Flow
+### What Hooks Cover (That Bridge Would Have)
 
-```
-Claude Code needs workspace context
-  → Sends: { type: "context_request", data: { requestId: "req-1", contextType: "workspace" } }
-  → BridgeAdapter emits "context-request" event
-  → ClaudeIntegrationManager gathers workspace data from detectProjects()
-  → Sends: { type: "context_response", data: { requestId: "req-1", context: { path: "/project", ... } } }
-  → Claude Code receives context and uses it in reasoning
-```
+| Bridge Capability | Hook Equivalent | Coverage |
+|------------------|-----------------|----------|
+| Real-time status | `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure` | Full |
+| Tool call tracking | `PreToolUse` (with `tool_name` + `tool_input`) | Full |
+| Sub-agent awareness | `SubagentStart`, `SubagentStop` | Full |
+| Context compression | `PreCompact`, `PostCompact` | Full |
+| Session lifecycle | `SessionStart`, `SessionEnd` | Full |
+| File change tracking | `FileChanged` | Partial (watched files only) |
+| Notifications | `Notification` | Full |
+| Error detection | `StopFailure` (with error type) | Full |
+
+### What Hooks Cannot Do (Bridge Could Have)
+
+| Capability | Status | Workaround |
+|-----------|--------|------------|
+| Bidirectional context injection | Not possible with hooks | Use MCP tools — Claude Code calls `wotch_project_info`, `wotch_git_status` |
+| Real-time token usage tracking | Not available in hook payloads | Monitor via API usage tracking (Plan 2) |
+| File path + line number for edits | `tool_input` includes `file_path` for Edit/Write/Read | Partial — available in `PreToolUse` |
+| Command routing (Wotch → Claude) | Not possible with hooks | Not needed — MCP tools serve this purpose |
+
+The two-channel model covers ~90% of what the three-channel model proposed, with significantly lower implementation complexity and zero reliance on undocumented protocols.
 
 ---
 
-## State Tracking
+## Future: IDE MCP Server Integration
 
-Bridge state updates provide the most granular view of Claude Code's internal state.
+If Claude Code's IDE integration protocol is ever documented or opened to third parties, Wotch could implement it as a third channel. Signs to watch for:
 
-### State Update Fields
+- **Public bridge protocol spec** published by Anthropic
+- **Stable port or discovery mechanism** for third-party clients
+- **Token-based auth** that external tools can obtain
+- **Third-party IDE extension API** for registering as a bridge client
 
-```typescript
-interface StateUpdate {
-  status: 'idle' | 'thinking' | 'tool_use' | 'streaming' | 'waiting' | 'error';
-  tool?: string;           // Active tool name (when status === 'tool_use')
-  file?: string;           // File being read/edited
-  line?: number;           // Line number in file
-  tokenUsage?: {
-    input: number;
-    output: number;
-  };
-  agentDepth?: number;     // 0 = main, 1+ = sub-agent
-  contextWindow?: {
-    used: number;
-    total: number;
-  };
+Until then, the hooks + MCP architecture is the correct approach. It uses only public, documented configuration surfaces (`~/.claude/settings.json` for hooks, `~/.claude.json` for MCP) and is resilient to Claude Code version changes.
+
+---
+
+## Comparison: Original Bridge Plan vs. Reality
+
+| Aspect | Original Plan (04-bridge-adapter.md v1) | Reality |
+|--------|----------------------------------------|---------|
+| Protocol | Custom WebSocket with handshake, state_update, tool_start, context_request messages | Proprietary TCP MCP server with hidden internal RPC |
+| Discovery | `CLAUDE_BRIDGE_PORT` environment variable | Lock file in `~/.claude/ide/` with ephemeral token |
+| Authentication | None (localhost assumption) | Random per-activation token with file-based exchange |
+| Capabilities | Rich state sync, context injection, command routing, file tracking | 2 user-visible tools (getDiagnostics, executeCode) |
+| Third-party support | Assumed implementable | Not designed for external clients |
+| Implementation effort | ~200 lines bridge-adapter.js | Not feasible without reverse engineering |
+
+---
+
+## Impact on Architecture
+
+### Revised Channel Model
+
+```
+Claude Code (running in Wotch terminal)
+    |
+    |--- Hooks (24 events) ──► Wotch Hook Receiver (HTTP POST localhost:19520)
+    |    (type: http)              |
+    |                              +--> EnhancedClaudeStatusDetector
+    |                              +--> Event bus (Plans 1, 3, 4)
+    |                              +--> Notification forwarding
+    |
+    |--- MCP ──────────────► Wotch MCP Server (stdio transport)
+    |    (configured in              |
+    |     ~/.claude.json)            +--> gitCheckpoint()
+    |                                +--> gitGetStatus()
+    |                                +--> detectProjects()
+    |                                +--> terminalBuffer()
+    |                                +--> sendNotification()
+    |
+    |--- Regex Fallback ──► Existing ClaudeStatusDetector
+         (PTY output)           (used when hooks unavailable)
+```
+
+### Files Removed
+
+The standalone `src/bridge-adapter.js` file is **not created**. The `ClaudeIntegrationManager` manages only two channels (hooks + MCP) plus the regex fallback.
+
+### Settings Simplified
+
+```json
+{
+  "integration": {
+    "hooksEnabled": true,
+    "hooksPort": 19520,
+    "mcpEnabled": true,
+    "mcpTransport": "stdio",
+    "autoConfigureHooks": true,
+    "autoRegisterMCP": true
+  }
 }
 ```
 
-### Mapping to Wotch Status
+No `bridgeEnabled`, `bridgePort`, or bridge-related settings.
 
-| Bridge Status | Wotch Status | Notes |
-|--------------|--------------|-------|
-| `idle` | `idle` | Direct map |
-| `thinking` | `thinking` | Claude is reasoning |
-| `tool_use` | `working` | Tool is executing |
-| `streaming` | `thinking` | Generating response text |
-| `waiting` | `waiting` | Waiting for user input |
-| `error` | `error` | Error occurred |
+### Status Detection: Two Sources + Fallback
 
-The bridge provides richer state than hooks or regex — it includes the specific tool, file, line number, and resource usage. The enhanced status detector can use these for richer pill displays (e.g., "Editing main.js:142" instead of just "Working").
+The `EnhancedClaudeStatusDetector` operates with two priority sources instead of three:
 
----
+1. **Hooks** (Priority 1) — structured events, ~100-200ms latency
+2. **Regex fallback** (Priority 2) — heuristic, always available
 
-## Connection Lifecycle
-
-### Startup
-
-1. Wotch starts the Bridge Adapter WebSocket server on port 19521
-2. When a new terminal tab is created and Claude Code is launched, Wotch sets `CLAUDE_BRIDGE_PORT=19521` in the PTY environment
-3. Claude Code detects the environment variable and connects to `ws://localhost:19521`
-4. Handshake exchange establishes capabilities
-
-### During Session
-
-5. Claude Code sends state updates as it works
-6. Claude Code sends context requests when it needs workspace info
-7. Wotch responds to context requests with gathered data
-8. Wotch can send commands to Claude Code (optional, used by Plan 4 agents)
-
-### Shutdown
-
-9. When Claude Code exits, WebSocket disconnects
-10. BridgeAdapter cleans up connection and state maps
-11. Status detector falls back to hooks or regex for that tab
-
-### Reconnection
-
-If the WebSocket drops unexpectedly:
-- Claude Code will attempt to reconnect (built-in retry logic)
-- Wotch's BridgeAdapter accepts new connections at any time
-- State is re-established via a fresh handshake
-- No data is lost — hooks and regex provide continuity during the gap
-
----
-
-## Integration with Other Channels
-
-The bridge adapter complements rather than replaces hooks and MCP:
-
-| Capability | Hooks | MCP | Bridge |
-|-----------|-------|-----|--------|
-| Status detection | yes | no | **yes (best)** |
-| Tool call tracking | yes | no | **yes (with details)** |
-| Wotch tool access | no | **yes** | no |
-| Context injection | no | no | **yes** |
-| Bidirectional comms | no | request-response | **yes (streaming)** |
-| Works without config | no (needs hooks setup) | no (needs MCP config) | **yes (env var only)** |
-
-The bridge is the most capable channel but also the least stable (depends on Claude Code's bridge implementation, which may change). Hooks and MCP provide fallback reliability.
-
----
-
-## Security
-
-- WebSocket server binds to `127.0.0.1` only
-- No authentication beyond localhost isolation (same pattern as Claude Code's own bridge)
-- Message validation: all incoming messages are parsed and validated against known types; unknown types are ignored
-- No arbitrary command execution from bridge messages — Wotch only processes recognized message types
-- Context responses never include sensitive data (SSH credentials, API keys, encrypted settings)
-- Connection limit: 10 simultaneous bridge connections (one per tab, with margin)
-
-### New Invariant: INV-SEC-008
-
-Bridge adapter must validate all incoming messages against a known schema before processing. Unknown message types are logged and discarded, never executed.
-
----
-
-## Limitations & Future Work
-
-### Current Limitations
-
-- Bridge protocol is reverse-engineered from Claude Code's VS Code extension behavior — it is not a published, stable API
-- Some message types may change between Claude Code versions
-- The bridge may not be available in all Claude Code editions (e.g., older versions, web-only)
-
-### Future Enhancements (Not in this plan)
-
-- **Rich status display**: Show file paths and line numbers in the pill ("Editing src/main.js:142")
-- **Token usage display**: Show context window usage in the UI (bridge provides this data)
-- **Agent depth indicator**: Show when Claude Code is running sub-agents
-- **Command palette integration**: Send commands to Claude Code from Wotch's command palette
-
----
-
-## Testing
-
-### Unit Tests
-
-1. Bridge adapter starts WebSocket server on configured port
-2. Handshake exchange completes correctly
-3. State updates are parsed and emitted as events
-4. Context requests trigger event emission
-5. Context responses are sent in correct format
-6. Connection cleanup on WebSocket close
-7. Unknown message types are ignored (not crash)
-8. Multiple simultaneous connections are handled
-
-### Integration Tests
-
-1. Set `CLAUDE_BRIDGE_PORT` → launch Claude Code in test PTY → verify handshake
-2. Trigger tool use in Claude Code → verify `tool_start`/`tool_end` events received
-3. Kill Claude Code → verify clean disconnection → verify fallback to hooks/regex
-4. Reconnect after disconnect → verify state re-established
+See `05-enhanced-status-detection.md` for the updated fusion logic.

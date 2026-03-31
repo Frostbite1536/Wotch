@@ -21,7 +21,7 @@ Step-by-step build guide for the Claude Code deep integration. Each step is inde
 
 ### 1.1 Create `src/enhanced-status-detector.js`
 
-Create the `EnhancedClaudeStatusDetector` class as specified in `05-enhanced-status-detection.md`. Initially, only the regex source is active.
+Create the `EnhancedClaudeStatusDetector` class as specified in `05-enhanced-status-detection.md`. Two sources: hooks and regex. Initially, only the regex source is active.
 
 ### 1.2 Create `src/claude-integration-manager.js`
 
@@ -41,7 +41,7 @@ Create the `ClaudeIntegrationManager` class as specified in `01-architecture.md`
 - No new ports opened, no new config files modified
 - Console logs show enhanced detector receiving regex events
 
-**Lines changed**: ~50 in main.js, ~200 new in enhanced-status-detector.js, ~80 new in claude-integration-manager.js
+**Lines changed**: ~50 in main.js, ~180 new in enhanced-status-detector.js, ~80 new in claude-integration-manager.js
 
 ---
 
@@ -51,13 +51,14 @@ Create the `ClaudeIntegrationManager` class as specified in `01-architecture.md`
 
 ### 2.1 Create `src/hook-receiver.js`
 
-Implement the `HookReceiver` class as specified in `02-hooks-integration.md`.
+Implement the `HookReceiver` class as specified in `02-hooks-integration.md`. Accepts HTTP POST requests at `/hook/<EventType>` paths. Parses the body as JSON (Claude Code's hook stdin payload).
 
 ### 2.2 Modify `src/claude-integration-manager.js`
 
 - Instantiate `HookReceiver` with configured port
 - Wire `hook-event` events to `EnhancedClaudeStatusDetector.updateFromSource()`
-- Add hook-to-status mapping logic
+- Add hook-to-status mapping logic (`mapHookToStatus()` function)
+- Add session-to-tab mapping (track `session_id` → `tabId` via `cwd` matching on `SessionStart`)
 
 ### 2.3 Modify `src/main.js`
 
@@ -69,8 +70,10 @@ Implement the `HookReceiver` class as specified in `02-hooks-integration.md`.
 ### 2.4 Add auto-configuration
 
 - Add `configureClaudeHooks()` function to main.js
-- Call it on startup if `integration.autoConfigureHooks` is true and `~/.claude/` exists
+- Writes `type: http` hooks to `~/.claude/settings.json` for 12 subscribed events
+- Call on startup if `integration.autoConfigureHooks` is true and `~/.claude/` exists
 - Show first-run confirmation dialog before modifying Claude Code settings
+- Never overwrite existing hooks (append only, idempotent)
 
 ### 2.5 Modify `src/preload.js`
 
@@ -79,13 +82,14 @@ Implement the `HookReceiver` class as specified in `02-hooks-integration.md`.
 ### 2.6 Test
 
 - Start Wotch → verify hook receiver starts on port 19520
-- `curl -X POST http://localhost:19520/hook -H 'Content-Type: application/json' -d '{"event":"PreToolUse","tool":"BashTool","session":"test-123"}'` → verify 200 response
-- Verify enhanced detector receives hook event
+- `curl -X POST http://localhost:19520/hook/PreToolUse -H 'Content-Type: application/json' -d '{"session_id":"test-123","tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"/tmp","hook_event_name":"PreToolUse"}'` → verify 200 response
+- Verify enhanced detector receives hook event and maps it to `working` state
+- Check `~/.claude/settings.json` has `type: http` hooks (not `type: command` with curl)
 - Launch Claude Code with hooks configured → verify status updates arrive via hooks
 - Kill hook receiver → verify regex fallback activates
 - Test rate limiting: send 200 requests in 1 second → verify 429 after 100
 
-**Lines changed**: ~150 new in hook-receiver.js, ~60 in claude-integration-manager.js, ~40 in main.js, ~5 in preload.js
+**Lines changed**: ~150 new in hook-receiver.js, ~80 in claude-integration-manager.js, ~40 in main.js, ~5 in preload.js
 
 ---
 
@@ -101,17 +105,17 @@ npm install @modelcontextprotocol/sdk
 
 ### 3.2 Create `src/mcp-server.js`
 
-Implement the standalone MCP server script as specified in `03-mcp-server.md`. This runs as a separate Node.js process launched by Claude Code.
+Implement the standalone MCP server script as specified in `03-mcp-server.md`. This runs as a separate Node.js process launched by Claude Code via stdio transport.
 
 ### 3.3 Create MCP IPC server in `src/main.js`
 
-- Add `MCPIPCServer` class (TCP server on port 19523)
+- Add `MCPIPCServer` class (TCP server on port 19523, bound to 127.0.0.1)
 - Register handlers for: `gitCheckpoint`, `gitGetStatus`, `gitGetDiff`, `getProjectInfo`, `terminalBuffer`, `notify`, `listTabs`, `tabStatus`
 - Start in `app.whenReady()`, stop in `before-quit`
 
 ### 3.4 Add terminal buffer IPC
 
-The `wotch_terminal_buffer` MCP tool needs to read xterm.js buffer content from the renderer. Add a new IPC round-trip:
+The `wotch_terminal_buffer` MCP tool needs to read xterm.js buffer content from the renderer:
 
 - **main.js**: Handler for MCP `terminalBuffer` request → sends `terminal-buffer-read` to renderer → waits for response
 - **preload.js**: Add `onTerminalBufferRead` and `sendTerminalBuffer` methods
@@ -120,8 +124,9 @@ The `wotch_terminal_buffer` MCP tool needs to read xterm.js buffer content from 
 ### 3.5 Auto-register MCP server
 
 - Add `registerMCPServer()` function to main.js
+- Write Wotch MCP server entry to **`~/.claude.json`** (NOT `~/.claude/settings.json`)
+- Config format: `{ "type": "stdio", "command": "node", "args": [...], "env": {...} }`
 - Call on startup if `integration.autoRegisterMCP` is true
-- Write Wotch MCP server entry to `~/.claude/settings.json` under `mcpServers`
 
 ### 3.6 Add settings
 
@@ -133,6 +138,7 @@ The `wotch_terminal_buffer` MCP tool needs to read xterm.js buffer content from 
 
 - Start Wotch → verify MCP IPC server starts on port 19523
 - Run `node src/mcp-server.js` manually with `WOTCH_IPC_PORT=19523` → verify it connects
+- Check `~/.claude.json` has `wotch` entry with `"type": "stdio"` (not missing type field)
 - Configure MCP server in Claude Code → launch Claude Code → verify `wotch_*` tools appear
 - Ask Claude Code to "create a checkpoint using wotch" → verify checkpoint created
 - Ask Claude Code to "check git status via wotch" → verify correct status returned
@@ -147,76 +153,30 @@ The `wotch_terminal_buffer` MCP tool needs to read xterm.js buffer content from 
 
 ---
 
-## Step 4: Bridge Adapter
-
-**Goal**: Implement the bridge client that connects to Claude Code's IDE bridge protocol.
-
-### 4.1 Create `src/bridge-adapter.js`
-
-Implement the `BridgeAdapter` class as specified in `04-bridge-adapter.md`. Uses the `ws` package (already a dependency for Plan 1; install now if not present).
-
-### 4.2 Install `ws` if needed
-
-```bash
-npm install ws
-```
-
-### 4.3 Modify `src/claude-integration-manager.js`
-
-- Instantiate `BridgeAdapter` with configured port
-- Wire `state-update`, `tool-start`, `tool-end`, `context-request` events
-- Map bridge state updates to enhanced detector via `updateFromSource()`
-- Handle `context-request` events by gathering data from main.js
-
-### 4.4 Modify `src/main.js`
-
-- Set `CLAUDE_BRIDGE_PORT` environment variable in PTY spawn
-- Set `WOTCH_TAB_ID` environment variable in PTY spawn
-- Start bridge adapter in `app.whenReady()`
-- Stop bridge adapter in `before-quit`
-
-### 4.5 Add settings
-
-- `integration.bridgeEnabled` (default: true)
-- `integration.bridgePort` (default: 19521)
-
-### 4.6 Test
-
-- Start Wotch → verify bridge WebSocket server starts on port 19521
-- Create new terminal tab → verify `CLAUDE_BRIDGE_PORT` is set in environment
-- Launch Claude Code in tab → observe bridge connection (if Claude Code supports it)
-- If bridge connects: verify state updates flow through enhanced detector
-- If bridge doesn't connect: verify hooks and regex fallback work normally
-- Kill Claude Code → verify clean bridge disconnection
-
-**Lines changed**: ~200 new in bridge-adapter.js, ~40 in claude-integration-manager.js, ~30 in main.js
-
----
-
-## Step 5: Switch Status Detection to Enhanced Detector
+## Step 4: Switch Status Detection to Enhanced Detector
 
 **Goal**: Route all status IPC through the enhanced detector instead of the old regex detector.
 
-### 5.1 Modify `src/main.js`
+### 4.1 Modify `src/main.js`
 
 - Replace all `claudeStatus.getStatus(tabId)` calls with `integrationManager.getStatus(tabId)`
-- Replace all `claudeStatus.on('status-changed', ...)` listeners with `integrationManager.enhancedDetector.on('status-changed', ...)`
-- Keep the old `ClaudeStatusDetector` instantiated (it's now a source for the enhanced detector)
+- Replace all `claudeStatus.on('status-changed', ...)` listeners with `integrationManager.statusDetector.on('status-changed', ...)`
+- Keep the old `ClaudeStatusDetector` instantiated (it's a source for the enhanced detector)
 
-### 5.2 Update IPC payload
+### 4.2 Update IPC payload
 
-- The `claude-status` IPC event now sends the enhanced status object (with `source`, `tool`, `file`, `line` fields)
+- The `claude-status` IPC event now sends the enhanced status object (with `source`, `tool`, `file` fields)
 - Ensure backward compatibility: renderer handles both old and new formats
 
-### 5.3 Update renderer.js
+### 4.3 Update renderer.js
 
 - Read enhanced fields from status events
 - Update pill label to show tool-specific descriptions when available
 - Add source badge in debug/settings mode
 
-### 5.4 Test
+### 4.4 Test
 
-- Verify pill shows "Editing main.js" instead of "Working..." when bridge or hooks are active
+- Verify pill shows "Editing main.js" instead of "Working..." when hooks are active
 - Verify pill shows "Working..." when only regex is available
 - Verify all existing pill behavior (colors, transitions, idle timeout) still works
 - Verify per-tab status isolation
@@ -225,11 +185,11 @@ npm install ws
 
 ---
 
-## Step 6: Settings UI
+## Step 5: Settings UI
 
 **Goal**: Add integration status display and configuration to the settings panel.
 
-### 6.1 Modify `src/index.html`
+### 5.1 Modify `src/index.html`
 
 Add a new "Claude Code Integration" section to the settings panel:
 
@@ -253,74 +213,62 @@ Add a new "Claude Code Integration" section to the settings panel:
         <span class="toggle-slider"></span>
       </label>
     </div>
-    <div class="channel-row">
-      <span class="channel-dot" id="bridge-dot"></span>
-      <span>Bridge</span>
-      <label class="toggle">
-        <input type="checkbox" id="setting-bridge-enabled">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
   </div>
   <button id="btn-reconfigure-hooks">Reconfigure Hooks</button>
   <button id="btn-reregister-mcp">Re-register MCP</button>
 </div>
 ```
 
-### 6.2 Modify `src/renderer.js`
+### 5.2 Modify `src/renderer.js`
 
 - Poll integration status every 5 seconds via IPC
-- Update channel dots (green = active, gray = inactive, red = error)
+- Update channel dots (green = active, gray = inactive)
 - Wire toggle switches to settings save
 - Wire reconfigure buttons to IPC handlers
 
-### 6.3 Add CSS for all 4 themes
+### 5.3 Add CSS for all 4 themes
 
-- Channel dot colors (using existing theme variables)
+- Channel dot colors
 - Channel row layout
-- Toggle switch styling (reuse existing pattern from settings)
+- Toggle switch styling (reuse existing pattern)
 
-### 6.4 Test
+### 5.4 Test
 
 - Open settings → verify integration section visible
 - Toggle hooks off → verify hook receiver stops
 - Toggle hooks on → verify hook receiver restarts
 - Check channel dots reflect actual connection state
-- Click "Reconfigure Hooks" → verify `~/.claude/settings.json` updated
+- Click "Reconfigure Hooks" → verify `~/.claude/settings.json` updated with `type: http` hooks
+- Click "Re-register MCP" → verify `~/.claude.json` updated
 - Verify all 4 themes render the section correctly
 
-**Lines changed**: ~60 in index.html, ~80 in renderer.js, ~5 in preload.js
+**Lines changed**: ~50 in index.html, ~70 in renderer.js, ~5 in preload.js
 
 ---
 
-## Step 7: Documentation & Invariants
+## Step 6: Documentation & Invariants
 
 **Goal**: Update project documentation to reflect the new integration layer.
 
-### 7.1 Update `docs/INVARIANTS.md`
+### 6.1 Update `docs/INVARIANTS.md`
 
 Add new invariants:
 - **INV-SEC-006**: Hook receiver binds to 127.0.0.1 only
 - **INV-SEC-007**: MCP tools must not expose destructive operations
-- **INV-SEC-008**: Bridge adapter validates all messages against known schema
 
-### 7.2 Update `docs/ARCHITECTURE.md`
+### 6.2 Update `docs/ARCHITECTURE.md`
 
-Add new section describing the ClaudeIntegrationManager, three channels, and enhanced status detector.
+Add new section describing the ClaudeIntegrationManager, two channels, and enhanced status detector.
 
-### 7.3 Update `docs/DECISIONS.md`
+### 6.3 Update `docs/THREAT_MODEL.md`
 
-Add decision entry for hooks-first integration approach.
+Add new attack surfaces: hook receiver HTTP endpoint, MCP IPC server.
 
-### 7.4 Update `docs/THREAT_MODEL.md`
+### 6.4 Update `prompts/engineering.md`
 
-Add new attack surfaces: hook receiver HTTP endpoint, MCP IPC server, bridge WebSocket.
+Add the new files (hook-receiver.js, mcp-server.js, etc.) to the architecture overview. Document the new IPC channels, settings, and config file locations (`~/.claude/settings.json` for hooks, `~/.claude.json` for MCP).
 
-### 7.5 Update `prompts/engineering.md`
-
-Add the new files (hook-receiver.js, mcp-server.js, bridge-adapter.js, etc.) to the architecture overview. Document the new IPC channels and settings.
-
-### 7.6 Update `CHECKLIST.md`
+### 6.5 Update `CHECKLIST.md`
 
 Add checklist items for integration channel testing.
 
@@ -330,15 +278,14 @@ Add checklist items for integration channel testing.
 
 ```
 Step 1: Enhanced detector scaffolding     ████
-Step 2: Hook receiver                     ████████
+Step 2: Hook receiver + auto-config       ████████
 Step 3: MCP server                        ████████████
-Step 4: Bridge adapter                    ████████
-Step 5: Switch to enhanced detector       ████
-Step 6: Settings UI                       ██████
-Step 7: Documentation                     ████
+Step 4: Switch to enhanced detector       ████
+Step 5: Settings UI                       ██████
+Step 6: Documentation                     ████
 ```
 
-Steps 1–4 can be merged individually. Step 5 depends on at least Steps 1–2. Steps 6–7 can proceed in parallel with Steps 3–4.
+Steps 1–3 can be merged individually. Step 4 depends on Steps 1–2. Steps 5–6 can proceed in parallel with Step 3.
 
 ---
 
@@ -348,30 +295,37 @@ Steps 1–4 can be merged individually. Step 5 depends on at least Steps 1–2. 
 
 | File | Lines (est.) | Purpose |
 |------|-------------|---------|
-| `src/enhanced-status-detector.js` | ~200 | Multi-source status fusion |
-| `src/claude-integration-manager.js` | ~150 | Central coordinator |
+| `src/enhanced-status-detector.js` | ~180 | Two-source status fusion |
+| `src/claude-integration-manager.js` | ~120 | Central coordinator |
 | `src/hook-receiver.js` | ~150 | HTTP server for hook events |
 | `src/mcp-server.js` | ~250 | Standalone MCP server script |
-| `src/bridge-adapter.js` | ~200 | WebSocket bridge client |
 
 ### Modified Files
 
 | File | Lines changed (est.) | Nature of changes |
 |------|---------------------|-------------------|
-| `src/main.js` | ~200 | Integration manager setup, IPC server, env vars |
-| `src/preload.js` | ~25 | New bridge methods |
-| `src/renderer.js` | ~120 | Enhanced status display, settings UI logic |
-| `src/index.html` | ~80 | Settings UI HTML/CSS |
-| `package.json` | ~3 | New dependencies |
-| `docs/INVARIANTS.md` | ~20 | New invariants |
-| `docs/ARCHITECTURE.md` | ~60 | New section |
-| `docs/DECISIONS.md` | ~15 | New decision entry |
-| `docs/THREAT_MODEL.md` | ~30 | New attack surfaces |
-| `prompts/engineering.md` | ~20 | Updated file list |
-| `CHECKLIST.md` | ~10 | New checklist items |
+| `src/main.js` | ~180 | Integration manager setup, MCP IPC server, auto-config |
+| `src/preload.js` | ~20 | New integration status methods |
+| `src/renderer.js` | ~110 | Enhanced status display, settings UI logic |
+| `src/index.html` | ~70 | Settings UI HTML/CSS |
+| `package.json` | ~2 | New dependency |
+| `docs/INVARIANTS.md` | ~15 | New invariants |
+| `docs/ARCHITECTURE.md` | ~50 | New section |
+| `docs/DECISIONS.md` | ~15 | Already updated |
+| `docs/THREAT_MODEL.md` | ~20 | New attack surfaces |
+| `prompts/engineering.md` | ~15 | Updated file list |
+| `CHECKLIST.md` | ~8 | New checklist items |
 
 ### Total Estimated New/Changed Code
 
-- New: ~950 lines across 5 files
-- Modified: ~580 lines across 11 files
-- **Total: ~1,530 lines**
+- New: ~700 lines across 4 files
+- Modified: ~505 lines across 11 files
+- **Total: ~1,205 lines**
+
+### Configuration Files Touched (at runtime)
+
+| File | What Wotch writes | When |
+|------|-------------------|------|
+| `~/.claude/settings.json` | `hooks` object with `type: http` entries | Auto-configure on first run |
+| `~/.claude.json` | `mcpServers.wotch` with `type: stdio` | Auto-register on first run |
+| `~/.wotch/settings.json` | `integration` settings | When user changes integration settings |

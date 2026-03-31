@@ -86,15 +86,16 @@ Significant architectural and product decisions, recorded for future context.
 
 ## 2026-03-31: Claude Code Deep Integration (Hooks-First Approach)
 
-**Decision:** Replace regex-based Claude Code status detection with structured integration using three channels: hooks (lifecycle events via HTTP), MCP (Wotch as tool server), and bridge (bidirectional IDE protocol). Hooks are the primary channel; MCP and bridge are additive.
-**Context:** Analysis of Claude Code's architecture (via leaked source at `instructkr/claude-code`) revealed that Claude Code exposes three structured integration surfaces: a hook system for lifecycle events, MCP server support for external tools, and a bidirectional IDE bridge protocol. The existing regex-based detection in `ClaudeStatusDetector` is fragile (false positives on non-Claude output, missed transitions, invisible states like context compression and agent spawning). Structured channels solve all of these issues.
+**Decision:** Replace regex-based Claude Code status detection with structured integration using two channels: hooks (24 lifecycle events via `type: http` hooks) and MCP (Wotch as tool server). Hooks are the primary channel for status detection; MCP provides tool access in the reverse direction.
+**Context:** Analysis of Claude Code's architecture revealed that Claude Code exposes two structured integration surfaces usable by third-party tools: a hook system for lifecycle events (configured in `~/.claude/settings.json`) and MCP server support (configured in `~/.claude.json`). A third surface — the IDE bridge — exists but is proprietary (TCP with ephemeral lock-file auth, undocumented protocol, not designed for third parties). The existing regex-based detection in `ClaudeStatusDetector` is fragile (false positives on non-Claude output, missed transitions, invisible states like context compression and agent spawning). The hook system solves all of these issues with 24 event types delivered as JSON payloads.
 **Implementation:**
-- A `ClaudeIntegrationManager` coordinates three channels: `HookReceiver` (HTTP POST server on localhost:19520), `WotchMCPServer` (stdio/SSE MCP server exposing Wotch tools), and `BridgeAdapter` (WebSocket client for Claude Code's IDE bridge).
-- An `EnhancedClaudeStatusDetector` fuses data from all three channels using priority-based resolution (bridge > hooks > regex fallback).
+- A `ClaudeIntegrationManager` coordinates two channels: `HookReceiver` (HTTP server on localhost:19520 receiving `type: http` hook payloads) and `WotchMCPServer` (stdio MCP server exposing Wotch tools, registered in `~/.claude.json`).
+- An `EnhancedClaudeStatusDetector` fuses data from hooks and regex fallback using priority-based resolution (hooks > regex).
 - Each channel is independently toggleable and degrades gracefully. With no channels active, the existing regex detector serves as fallback.
-- Auto-configuration writes hook commands and MCP server entries to `~/.claude/settings.json` (with user consent, never overwriting existing config).
-- New files: `src/hook-receiver.js`, `src/mcp-server.js`, `src/bridge-adapter.js`, `src/claude-integration-manager.js`, `src/enhanced-status-detector.js`.
-**Trade-off:** Adds 3 localhost servers (HTTP, TCP, WebSocket) and 5 new source files (~950 lines). The hook receiver and MCP IPC server add minor port management complexity. The bridge protocol is reverse-engineered from Claude Code's VS Code extension and may change between versions. Mitigated by: independent channel degradation, configurable ports with auto-fallback, and regex detector as an always-available safety net. The legal risk of using the leaked source directly is avoided — we only use the architectural insights to target Claude Code's public configuration surfaces (settings.json hooks, MCP server config, environment variables).
+- Hooks are configured as `type: http` entries in `~/.claude/settings.json` — Claude Code natively POSTs the hook's JSON payload to Wotch's HTTP endpoint. No curl or shell command intermediary needed.
+- MCP server entry is written to `~/.claude.json` with `"type": "stdio"` (auto-registration with user consent, never overwriting existing config).
+- New files: `src/hook-receiver.js`, `src/mcp-server.js`, `src/claude-integration-manager.js`, `src/enhanced-status-detector.js`.
+**Trade-off:** Adds 2 localhost servers (HTTP for hooks, TCP for MCP IPC) and 4 new source files (~700 lines). Port management complexity is minor (configurable with auto-fallback). The hook system's `type: http` support may not be available in very old Claude Code versions — mitigated by regex fallback. MCP protocol may evolve — mitigated by pinning SDK version.
 
 ---
 

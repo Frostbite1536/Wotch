@@ -125,18 +125,17 @@
 **Goal:** Replace regex-based Claude Code detection with structured, first-party integration channels.
 
 ### Features
-- [ ] Hook receiver for Claude Code lifecycle events (PreToolUse, PostToolUse, Stop, Notification)
+- [ ] Hook receiver for 24 Claude Code lifecycle events via `type: http` hooks
 - [ ] MCP server exposing Wotch tools to Claude Code (checkpoints, git status, notifications)
-- [ ] Bridge adapter for bidirectional IDE protocol (real-time state sync)
-- [ ] Enhanced multi-source status detector (bridge > hooks > regex fallback)
-- [ ] Auto-configuration of `~/.claude/settings.json` for hooks and MCP
-- [ ] Rich pill status display ("Editing main.js:142" instead of "Working...")
-- [ ] Integration channel health display in settings (hooks/MCP/bridge indicators)
+- [ ] Enhanced multi-source status detector (hooks > regex fallback)
+- [ ] Auto-configuration of `~/.claude/settings.json` (hooks) and `~/.claude.json` (MCP)
+- [ ] Rich pill status display ("Editing main.js" instead of "Working...")
+- [ ] Integration channel health display in settings (hooks/MCP indicators)
 
 ### Success Criteria
-- Status detection has zero false positives when hooks or bridge are active
+- Status detection has zero false positives when hooks are active
 - Claude Code can call `wotch_checkpoint` as an MCP tool
-- Graceful fallback to regex when structured channels are unavailable
+- Graceful fallback to regex when hooks are unavailable
 
 ### Details
 Full implementation plan: `roadmap/00-claude-code-deep-integration/`
