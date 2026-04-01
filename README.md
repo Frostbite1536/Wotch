@@ -11,8 +11,10 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Notch-style pill** — small indicator at the top, left, or right edge of your screen
 - **Hover to reveal** — mouse over the pill to expand the terminal panel
 - **Global hotkey** — `Ctrl+`` ` (or `⌘+`` ` on Mac) toggles the panel from anywhere
-- **Multi-tab terminals** — run multiple shell sessions side by side, with per-tab status dots and drag-to-reorder
+- **Multi-tab terminals** — run multiple shell sessions with per-tab status dots, drag-to-reorder, `Ctrl+Tab`/`Ctrl+1-9` navigation
+- **Split panes** — split any tab horizontally (`Ctrl+Shift+D`) or vertically (`Ctrl+Shift+E`), navigate panes with `Alt+Arrow`, drag dividers to resize
 - **Real terminal** — full PowerShell/bash/zsh via node-pty + xterm.js
+- **Copy-on-select** — selecting text in the terminal automatically copies to clipboard
 - **Terminal search** — `Ctrl+F` to search terminal scrollback
 - **Command palette** — `Ctrl+Shift+P` for quick access to all commands
 - **Themes** — dark, light, purple, and green presets
@@ -20,15 +22,21 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Git checkpoints** — `Ctrl+S` / `⌘S` snapshots your project before Claude makes changes
 - **Checkpoint diff viewer** — see what changed since the last checkpoint
 - **Live git status** — shows branch, changed files, and checkpoint count
+- **Directory persistence** — tabs remember their working directory across restarts
 - **Claude finish notification** — system notification when Claude is done (while Wotch is in background)
 - **Auto-launch Claude** — optionally type `claude` in every new tab
+- **Disable hover** — toggle hover-to-open off in settings for hotkey-only mode
 - **Customizable position** — place the notch at the top, left, or right edge of your screen
-- **Drag to resize** — drag the bottom edge (or side edge for left/right positions) to resize the panel
+- **Centered resize** — drag to resize expands symmetrically from center (top position)
 - **Multiple monitor support** — choose which display to show the pill on
 - **macOS notch detection** — positions in the notch area on notch Macs, below the menu bar on others
 - **Always on top** — stays above all other windows
 - **Auto-update** — checks GitHub Releases for new versions
 - **System tray** — right-click tray icon to toggle or quit
+- **Claude Code integration** — three-channel architecture: hooks (status events), MCP (tool access), IDE bridge (bidirectional WebSocket)
+- **Plugin SDK** — extend Wotch with custom commands, status detectors, and panel views
+- **Agent SDK** — run autonomous AI agents with graduated trust, sub-agent spawning, and tool-specific UI rendering
+- **Local API** — HTTP + WebSocket API for external tool integration
 
 ## Install
 
@@ -52,10 +60,14 @@ No Node.js or build tools required.
 
 **Tips:**
 - Press `Ctrl+Shift+P` to open the command palette for quick access to all actions
+- Press `Ctrl+Shift+D` to split the current pane horizontally, `Ctrl+Shift+E` for vertical
+- Press `Ctrl+Tab` to cycle tabs, `Ctrl+1-9` to jump to a tab by number
+- Press `Alt+Arrow` to navigate between split panes
 - Press `Ctrl+F` to search terminal output
-- Drag tabs to reorder them
-- Drag the bottom edge of the panel to resize it (or the side edge for left/right positions)
-- Click 📌 to pin the panel open while you work in other windows
+- Selecting text auto-copies it to the clipboard
+- Drag tabs to reorder them, drag split dividers to resize panes
+- Click the pin icon to pin the panel open while you work in other windows
+- Disable hover in Settings if you prefer hotkey-only mode (`Ctrl+\``)
 - Right-click the system tray icon to toggle or quit
 
 ## Development Setup

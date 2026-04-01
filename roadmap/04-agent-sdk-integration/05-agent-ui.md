@@ -586,12 +586,14 @@ Theme-specific visual appearance:
 
 When the agent panel opens:
 1. The terminal area width reduces by 280px.
-2. `fitAddon.fit()` is called on the active terminal to recalculate columns.
-3. The PTY is resized via `window.wotch.resizePty(tabId, newCols, newRows)`.
+2. `fitAllPanes()` is called on the active tab's `rootNode` to recalculate columns for all panes in the split tree.
+3. Each pane's PTY is resized automatically via the `term.onResize` callback.
 
 When the agent panel closes:
 1. The terminal area expands back to full width.
 2. Same resize sequence.
+
+**Note:** Tabs use a split pane tree model (`Tab { rootNode: SplitNode, activePaneId }`). Terminal instances and fitAddons are stored in the global `paneMap` (paneId → `{ term, fitAddon, searchAddon, el, cwd }`), not on the tab object directly.
 
 Implementation in renderer:
 
@@ -606,12 +608,13 @@ function toggleAgentPanel() {
     panel.classList.add('hidden');
   }
 
-  // Re-fit terminal after transition
+  // Re-fit all panes in the active tab after transition
   setTimeout(() => {
     const activeTab = tabs.find(t => t.id === activeTabId);
     if (activeTab) {
-      activeTab.fitAddon.fit();
-      const dims = activeTab.fitAddon.proposeDimensions();
+      fitAllPanes(activeTab.rootNode);
+      const pane = paneMap.get(activeTab.activePaneId);
+      const dims = pane ? pane.fitAddon.proposeDimensions() : null;
       if (dims) {
         window.wotch.resizePty(activeTabId, dims.cols, dims.rows);
       }

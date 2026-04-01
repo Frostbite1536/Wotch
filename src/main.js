@@ -3820,6 +3820,8 @@ if (!ClaudeIntegrationManager) {
   integrationManager.getIntegrationStatus = () => ({ hooks: { active: false }, mcp: { registered: false } });
   integrationManager.statusDetector = { tabs: new Map() };
   integrationManager.feedRegex = () => {};
+  integrationManager.addTab = () => {};
+  integrationManager.removeTab = () => {};
   integrationManager.configureClaudeHooks = () => 0;
   integrationManager.registerMCPServer = () => false;
   integrationManager.start = async () => {};

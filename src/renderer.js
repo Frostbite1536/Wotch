@@ -85,15 +85,15 @@ function applyTheme(themeName) {
       root.style.setProperty(key, value);
     }
   }
-  // Update existing terminal themes
-  tabs.forEach((t) => {
-    t.term.options.theme = {
-      ...t.term.options.theme,
+  // Update existing terminal themes (all panes)
+  for (const [, pane] of paneMap) {
+    pane.term.options.theme = {
+      ...pane.term.options.theme,
       background: theme.termBg,
       foreground: theme.termFg,
       cursor: theme.termCursor,
     };
-  });
+  }
 }
 
 function getTermTheme() {
@@ -805,11 +805,8 @@ window.wotch.onClaudeStatus(({ aggregate, perTab }) => {
 // ── Resize handling ────────────────────────────────────
 const resizeObserver = new ResizeObserver(() => {
   if (isExpanded) {
-    tabs.forEach((t) => {
-      if (t.el.classList.contains("active")) {
-        t.fitAddon.fit();
-      }
-    });
+    const active = tabs.find((t) => t.id === activeTabId);
+    if (active) fitAllPanes(active.rootNode);
   }
 });
 resizeObserver.observe(terminalsEl);
@@ -1095,7 +1092,7 @@ function closeSettings() {
   }
   // Re-focus terminal
   const active = tabs.find((t) => t.id === activeTabId);
-  if (active) active.term.focus();
+  if (active) { const p = paneMap.get(active.activePaneId); if (p) p.term.focus(); }
 }
 
 async function refreshIntegrationStatus() {
@@ -1519,7 +1516,7 @@ function switchToTerminal() {
   if (btnViewTerminal) btnViewTerminal.classList.add("active");
   if (btnViewChat) btnViewChat.classList.remove("active");
   const active = tabs.find((t) => t.id === activeTabId);
-  if (active) { active.fitAddon.fit(); active.term.focus(); }
+  if (active) { fitAllPanes(active.rootNode); const p = paneMap.get(active.activePaneId); if (p) p.term.focus(); }
 }
 
 if (btnViewTerminal) btnViewTerminal.addEventListener("click", switchToTerminal);
@@ -1899,7 +1896,10 @@ window.wotch.onTerminalBufferRead(({ tabId, lines }) => {
     window.wotch.sendTerminalBuffer("(tab not found)");
     return;
   }
-  const buf = tab.term.buffer.active;
+  const paneId = tab.activePaneId || getAllPaneIds(tab.rootNode)[0];
+  const pane = paneMap.get(paneId);
+  if (!pane) { window.wotch.sendTerminalBuffer("(pane not found)"); return; }
+  const buf = pane.term.buffer.active;
   const totalRows = buf.length;
   const startRow = Math.max(0, totalRows - (lines || 50));
   const output = [];
@@ -2138,18 +2138,20 @@ function closeSearch() {
   searchBar.classList.remove("open");
   const active = tabs.find((t) => t.id === activeTabId);
   if (active) {
-    active.searchAddon.clearDecorations();
-    active.term.focus();
+    const p = paneMap.get(active.activePaneId);
+    if (p) { p.searchAddon.clearDecorations(); p.term.focus(); }
   }
 }
 
 function doSearch(direction) {
   const active = tabs.find((t) => t.id === activeTabId);
   if (!active || !searchInput.value) return;
+  const p = paneMap.get(active.activePaneId);
+  if (!p) return;
   if (direction === "prev") {
-    active.searchAddon.findPrevious(searchInput.value);
+    p.searchAddon.findPrevious(searchInput.value);
   } else {
-    active.searchAddon.findNext(searchInput.value);
+    p.searchAddon.findNext(searchInput.value);
   }
 }
 
@@ -2244,7 +2246,8 @@ document.addEventListener("mouseup", () => {
     } else {
       window.wotch.saveSettings({ expandedHeight: document.body.offsetHeight });
     }
-    tabs.forEach((t) => t.fitAddon.fit());
+    const active = tabs.find((t) => t.id === activeTabId);
+    if (active) fitAllPanes(active.rootNode);
   }
 });
 
@@ -2307,7 +2310,7 @@ function closePalette() {
   paletteOpen = false;
   paletteOverlay.classList.remove("open");
   const active = tabs.find((t) => t.id === activeTabId);
-  if (active) active.term.focus();
+  if (active) { const p = paneMap.get(active.activePaneId); if (p) p.term.focus(); }
 }
 
 function getFilteredCommands() {

@@ -108,6 +108,13 @@ The global hotkey (Ctrl+` / Cmd+`) must always toggle the panel, regardless of p
 
 **Enforcement:** `toggle()` unconditionally flips the expanded state.
 
+### INV-UX-005: Split Pane Tree Integrity
+Each tab's `rootNode` must be a valid tree where every leaf node's `paneId` corresponds to a live entry in `paneMap`, and every `paneMap` entry corresponds to an active PTY process. When a pane is closed, it must be removed from both `paneMap` and `ptyProcesses`, and its sibling must be promoted in the tree. `activePaneId` must always point to an existing pane in the current tab's tree.
+
+**Rationale:** A dangling pane reference (paneId in tree but not in paneMap) causes null-pointer crashes on terminal focus, resize, or data routing. An orphaned PTY (in ptyProcesses but not in any tree) leaks system resources.
+
+**Enforcement:** `closePaneById()` removes from paneMap, kills PTY, and updates activePaneId before re-rendering. `closeTab()` walks the entire tree via `getAllPaneIds()` to kill all PTYs.
+
 ## Cross-Platform
 
 ### INV-PLAT-001: Wayland Graceful Degradation
@@ -294,3 +301,4 @@ Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `M
 | 2026-03-31 | INV-AGENT-001 through INV-AGENT-006 | Added for Agent SDK | Agent process isolation, file sandbox, API key isolation, shell safety, dangerous action approval, emergency stop |
 | 2026-03-31 | INV-AGENT-007 | Added for sub-agent spawning | Depth limit, cascading stop, global concurrent limit enforcement |
 | 2026-03-31 | INV-SEC-019 | Added for IDE Bridge | Bridge WebSocket localhost-only, token auth, DNS rebinding protection, lockfile cleanup |
+| 2026-03-31 | INV-UX-005 | Added for split panes | Pane tree integrity, paneMap consistency, activePaneId validity |

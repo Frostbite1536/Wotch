@@ -2,7 +2,7 @@
 
 ## Vision
 
-Phase 1 of Wotch delivered a complete floating terminal experience: hover-to-reveal, Claude Code status detection, git checkpoints, themes, multi-monitor support, SSH, and cross-platform distribution. Phase 2 extends Wotch from a terminal overlay into a programmable platform — exposing its capabilities to external tools, integrating directly with the Claude API, enabling third-party extensions, and embedding autonomous AI agents.
+Phase 1 of Wotch delivered a complete floating terminal experience: hover-to-reveal, Claude Code status detection, git checkpoints, themes, multi-monitor support, SSH, split panes, directory persistence, copy-on-select, and cross-platform distribution. Phase 2 extends Wotch from a terminal overlay into a programmable platform — exposing its capabilities to external tools, integrating directly with the Claude API, enabling third-party extensions, and embedding autonomous AI agents.
 
 ---
 

@@ -58,7 +58,10 @@
       "Bash(find /c/Users/LCM/Documents/wotch/wotch -path ./node_modules -prune -o -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx -o -name *.swift -o -name *.html -o -name *.css \\\\\\) -print)",
       "Bash(timeout 8 npx electron . --no-sandbox --enable-logging)",
       "Bash(timeout 6 npx electron . --no-sandbox --enable-logging)",
-      "Bash(timeout 10 npx electron . --no-sandbox --enable-logging)"
+      "Bash(timeout 10 npx electron . --no-sandbox --enable-logging)",
+      "Bash(grep -r \"term.*fitAddon\\\\|fitAddon.*term\\\\|{term,\\\\|,term}\" /c/Users/LCM/Documents/wotch/wotch/roadmap --include=\"*.md\")",
+      "Bash(grep -r \"rootNode\\\\|activePaneId\" /c/Users/LCM/Documents/wotch/wotch/roadmap --include=*.md)",
+      "Bash(find /c/Users/LCM/Documents/wotch/wotch/roadmap -name \"*.md\" -type f ! -path \"*/04-agent*\" ! -path \"*/00-claude*\" ! -path \"*/03-plugin*\" -exec basename {})"
     ]
   }
 }

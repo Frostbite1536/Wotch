@@ -128,20 +128,22 @@ Secure IPC bridge using `contextBridge.exposeInMainWorld`. Exposes the `window.w
 
 ### Renderer (`src/index.html` + `src/renderer.js`)
 
-HTML/CSS in `index.html`, all JS logic in `renderer.js` (loaded as ES module). Contains:
+HTML/CSS in `index.html`, all JS logic in `renderer.js`. xterm.js UMD modules loaded via `<script>` tags. Contains:
 - **Pill UI**: Status dot (color-coded by Claude state), label, dropdown arrow
-- **Tab bar**: Create/switch/close/reorder terminal tabs with per-tab status dots (drag-to-reorder)
-- **xterm.js terminals**: Full terminal emulation with fit, search, and web-links addons
-- **Terminal search**: Ctrl+F search overlay with prev/next navigation
+- **Tab bar**: Create/switch/close/reorder terminal tabs with per-tab status dots (drag-to-reorder). Keyboard: Ctrl+Tab (next), Ctrl+Shift+Tab (prev), Ctrl+1-9 (jump)
+- **Split panes**: Each tab contains a tree of panes (`SplitNode` model). Split horizontal (Ctrl+Shift+D), vertical (Ctrl+Shift+E), navigate (Alt+Arrow), drag dividers to resize. Data model: `Tab { id, name, rootNode: SplitNode, activePaneId, el }` where `SplitNode` is a tree of `{ type: "leaf", paneId }` and `{ type: "split", direction, children, ratio }` nodes. All panes tracked in global `paneMap` (paneId → `{ term, fitAddon, searchAddon, el, cwd }`). PTY processes keyed by paneId.
+- **xterm.js terminals**: Full terminal emulation with fit and search addons. Copy-on-select: auto-copies selection to clipboard. tmux mouse passthrough works natively.
+- **Terminal search**: Ctrl+F search overlay with prev/next navigation (operates on active pane)
 - **Project picker**: Dropdown of detected projects (VS Code, JetBrains, Xcode, Visual Studio, filesystem scan)
 - **Git status bar**: Branch name, changed file count, checkpoint count, checkpoint button, diff viewer button
 - **Diff viewer**: Color-coded git diff overlay (green/red/blue syntax)
 - **Command palette**: Ctrl+Shift+P fuzzy-filtered command overlay
 - **Themes**: Dark, light, purple, green presets via CSS custom property swapping
 - **Position handling**: Applies CSS position classes (`position-top`, `position-left`, `position-right`) to `<body>` for layout adaptation
-- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude), display selector, shell, SSH connection profiles, Claude Code integration (hooks/MCP channel toggles, health indicators, reconfigure buttons)
+- **Settings panel**: Appearance (theme), dimensions, position (top/left/right), behavior (auto-launch Claude, hover enable/disable), display selector, shell, SSH profiles, Claude Code integration (hooks/MCP/bridge channel toggles), plugin list, agent settings
 - **SSH UI**: Profile editor dialog, credential prompt (password/passphrase), host key verification dialog, new-tab menu with SSH profile quick-connect
-- **Drag to resize**: Bottom edge handle for live panel height adjustment (top position), side edge handle for width adjustment (left/right positions)
+- **Drag to resize**: Centered resize for top position (grows symmetrically). Side edge handle for width adjustment (left/right positions)
+- **Directory persistence**: Tracks cwd via OSC 7 escape sequences, restores tabs with saved directories on restart
 
 ## Data Flow
 
