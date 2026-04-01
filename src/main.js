@@ -71,6 +71,7 @@ const DEFAULT_SETTINGS = {
   expandedWidth: 640,
   expandedHeight: 440,
   hoverPadding: 20,
+  hoverEnabled: true,           // false = hotkey-only mode
   collapseDelay: 400,
   mousePollingMs: 100,
   defaultShell: "",          // empty = auto-detect
@@ -780,6 +781,7 @@ let isPinned = settings.pinned || false;
 let mousePoller = null;
 let collapseTimeout = null;
 let ptyProcesses = new Map(); // tabId → pty
+const tabCwds = new Map();    // tabId → last known working directory (via OSC 7)
 const sshSessions = new Map(); // tabId → { client, stream, profileId, authMethod, reconnectTimer }
 const pendingCredentials = new Map(); // tabId → { resolve, reject }
 const pendingHostVerify = new Map(); // tabId → { resolve }
@@ -1004,6 +1006,7 @@ let cursorCheckCount = 0;
 function startMouseTracking() {
   mousePoller = setInterval(() => {
     if (!mainWindow) return;
+    if (!settings.hoverEnabled) return; // Hotkey-only mode
 
     const mousePos = screen.getCursorScreenPoint();
 
@@ -1104,13 +1107,22 @@ function createPty(tabId, cwd) {
     cols: 80,
     rows: 24,
     cwd: startDir,
-    env: { ...process.env, TERM: "xterm-256color", WOTCH_TAB_ID: tabId },
+    env: {
+      ...process.env,
+      TERM: "xterm-256color",
+      WOTCH_TAB_ID: tabId,
+      // Inject OSC 7 cwd reporting for bash (zsh/fish do it automatically)
+      ...((!IS_WIN && !process.env.PROMPT_COMMAND) ? { PROMPT_COMMAND: 'printf "\\e]7;file://%s%s\\a" "$HOSTNAME" "$PWD"' } : {}),
+    },
   });
 
   ptyProc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("pty-data", { tabId, data });
     }
+    // Track working directory via OSC 7 escape sequence (emitted by modern shells)
+    const osc7 = data.match(/\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)[\x07\x1b]/);
+    if (osc7) tabCwds.set(tabId, decodeURIComponent(osc7[1]));
     // Feed data to status detector
     claudeStatus.feed(tabId, data);
     // Feed to plugin system (status detectors + terminal listeners)
@@ -4514,14 +4526,14 @@ ipcMain.handle("get-settings", () => ({ ...settings }));
 
 const ALLOWED_SETTING_KEYS = [
   "pillWidth", "pillHeight", "expandedWidth", "expandedHeight",
-  "hoverPadding", "collapseDelay", "mousePollingMs", "defaultShell",
+  "hoverPadding", "hoverEnabled", "collapseDelay", "mousePollingMs", "defaultShell",
   "startExpanded", "pinned", "theme", "autoLaunchClaude",
   "displayIndex", "position",
   "integrationHooksEnabled", "integrationMcpEnabled",
   "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
   "integrationBridgeEnabled", "integrationBridgePort",
   "apiEnabled", "apiPort",
-  "apiBudgetMonthly", "chatDefaultModel",
+  "apiBudgetMonthly", "chatDefaultModel", "lastTabCwds",
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -4895,15 +4907,34 @@ ipcMain.handle("get-displays", () => {
 ipcMain.on("resize-window", (_event, size) => {
   if (!mainWindow || !isExpanded) return;
   const pos = settings.position || "top";
+  const display = getTargetDisplay();
+  const wa = display.workArea;
+
   if (pos === "left" || pos === "right") {
-    // For side positions, drag handle adjusts width
     const clamped = Math.max(400, Math.min(1200, size));
     settings.expandedWidth = clamped;
   } else {
+    // Centered resize: grow symmetrically from vertical center
+    const oldHeight = settings.expandedHeight;
     const clamped = Math.max(200, Math.min(900, size));
     settings.expandedHeight = clamped;
   }
+
   const bounds = getExpandedBounds();
+
+  // For "top" position, center the panel vertically around the current midpoint
+  if (pos === "top") {
+    const yOffset = getTopOffset();
+    const topEdge = display.bounds.y + yOffset;
+    const currentBounds = mainWindow.getBounds();
+    const currentMid = currentBounds.y + Math.round(currentBounds.height / 2);
+    bounds.y = Math.max(topEdge, currentMid - Math.round(bounds.height / 2));
+    // Clamp bottom to work area
+    if (bounds.y + bounds.height > wa.y + wa.height) {
+      bounds.y = wa.y + wa.height - bounds.height;
+    }
+  }
+
   mainWindow.setBounds(bounds, false);
   saveSettings(settings);
 });
@@ -5213,6 +5244,10 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  // Persist tab working directories for next launch
+  const cwds = [...tabCwds.values()].filter(Boolean);
+  if (cwds.length > 0) { settings.lastTabCwds = cwds; saveSettings(settings); }
+
   globalShortcut.unregisterAll();
   clearInterval(idleCheckInterval);
   if (apiServer) apiServer.stop().catch(() => {});

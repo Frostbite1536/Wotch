@@ -5,9 +5,11 @@ const FitAddon = (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddo
 const SearchAddon = (window.SearchAddon && window.SearchAddon.SearchAddon) || window.SearchAddon;
 
 // ── State ──────────────────────────────────────────────
-let tabs = [];          // { id, name, term, fitAddon, searchAddon, el, cwd }
+let tabs = [];          // { id, name, rootNode, activePaneId, el }
 let activeTabId = null;
 let tabCounter = 0;
+let paneCounter = 0;
+const paneMap = new Map(); // paneId → { term, fitAddon, searchAddon, el, cwd }
 let isExpanded = false;
 let isPinned = false;
 let settingsOpen = false;
@@ -309,6 +311,182 @@ async function doCheckpoint() {
 
 btnCheckpoint.addEventListener("click", doCheckpoint);
 
+// ── Pane helpers ──────────────────────────────────────
+function createPaneNode(cwd) {
+  paneCounter++;
+  const paneId = `pane-${paneCounter}`;
+  const term = new Terminal({
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace",
+    fontSize: 12, lineHeight: 1.3, cursorBlink: true, cursorStyle: "bar",
+    theme: getTermTheme(),
+  });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  const searchAddon = new SearchAddon();
+  term.loadAddon(searchAddon);
+  const el = document.createElement("div");
+  el.className = "pane-container";
+  el.dataset.paneId = paneId;
+  el.style.cssText = "flex:1;position:relative;min-width:0;min-height:0;overflow:hidden;";
+  term.open(el);
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.ctrlKey && e.key === "Tab") return false;
+    if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") return false;
+    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "E")) return false;
+    if (e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return false;
+    return true;
+  });
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+  });
+  term.onData((data) => window.wotch.writePty(paneId, data));
+  term.onResize(({ cols, rows }) => window.wotch.resizePty(paneId, cols, rows));
+  const pane = { paneId, term, fitAddon, searchAddon, el, cwd };
+  paneMap.set(paneId, pane);
+  return { type: "leaf", paneId, el };
+}
+
+function renderSplitNode(node, container) {
+  container.innerHTML = "";
+  if (node.type === "leaf") {
+    const pane = paneMap.get(node.paneId);
+    if (pane) container.appendChild(pane.el);
+  } else {
+    container.style.display = "flex";
+    container.style.flexDirection = node.direction === "horizontal" ? "column" : "row";
+    const [a, b] = node.children;
+    const wrapA = document.createElement("div");
+    wrapA.style.cssText = `flex:${node.ratio};position:relative;min-width:0;min-height:0;overflow:hidden;display:flex;`;
+    const wrapB = document.createElement("div");
+    wrapB.style.cssText = `flex:${1 - node.ratio};position:relative;min-width:0;min-height:0;overflow:hidden;display:flex;`;
+    const divider = document.createElement("div");
+    divider.className = "split-divider";
+    divider.style.cssText = node.direction === "horizontal"
+      ? "height:4px;cursor:row-resize;background:var(--border);flex-shrink:0;"
+      : "width:4px;cursor:col-resize;background:var(--border);flex-shrink:0;";
+    // Divider drag
+    divider.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const startPos = node.direction === "horizontal" ? e.clientY : e.clientX;
+      const totalSize = node.direction === "horizontal" ? container.offsetHeight : container.offsetWidth;
+      const startRatio = node.ratio;
+      const onMove = (me) => {
+        const delta = (node.direction === "horizontal" ? me.clientY : me.clientX) - startPos;
+        node.ratio = Math.max(0.15, Math.min(0.85, startRatio + delta / totalSize));
+        wrapA.style.flex = String(node.ratio);
+        wrapB.style.flex = String(1 - node.ratio);
+        fitAllPanes(node);
+      };
+      const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+    container.appendChild(wrapA);
+    container.appendChild(divider);
+    container.appendChild(wrapB);
+    renderSplitNode(a, wrapA);
+    renderSplitNode(b, wrapB);
+  }
+}
+
+function fitAllPanes(node) {
+  if (!node) return;
+  if (node.type === "leaf") {
+    const pane = paneMap.get(node.paneId);
+    if (pane) requestAnimationFrame(() => pane.fitAddon.fit());
+  } else {
+    node.children.forEach(fitAllPanes);
+  }
+}
+
+function findNodeAndParent(root, paneId, parent = null) {
+  if (root.type === "leaf") return root.paneId === paneId ? { node: root, parent } : null;
+  for (const child of root.children) {
+    const found = findNodeAndParent(child, paneId, root);
+    if (found) return found;
+  }
+  return null;
+}
+
+function getAllPaneIds(node) {
+  if (node.type === "leaf") return [node.paneId];
+  return node.children.flatMap(getAllPaneIds);
+}
+
+function getActiveTab() { return tabs.find(t => t.id === activeTabId); }
+
+function splitActivePane(direction) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const paneId = tab.activePaneId;
+  const result = findNodeAndParent(tab.rootNode, paneId);
+  if (!result) return;
+  const { node: leaf, parent } = result;
+  const pane = paneMap.get(paneId);
+  const newLeaf = createPaneNode(pane ? pane.cwd : null);
+  const splitNode = { type: "split", direction, children: [leaf, newLeaf], ratio: 0.5, el: null };
+  if (!parent) {
+    tab.rootNode = splitNode;
+  } else {
+    const idx = parent.children.indexOf(leaf);
+    parent.children[idx] = splitNode;
+  }
+  // Create PTY for new pane
+  window.wotch.createPty(newLeaf.paneId, pane ? pane.cwd : undefined);
+  tab.activePaneId = newLeaf.paneId;
+  renderSplitNode(tab.rootNode, tab.el);
+  fitAllPanes(tab.rootNode);
+  const newPane = paneMap.get(newLeaf.paneId);
+  if (newPane) setTimeout(() => { newPane.fitAddon.fit(); newPane.term.focus(); }, 50);
+}
+
+function closePaneById(paneId) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const allPanes = getAllPaneIds(tab.rootNode);
+  if (allPanes.length <= 1) { closeTab(tab.id); return; }
+  const result = findNodeAndParent(tab.rootNode, paneId);
+  if (!result || !result.parent) return; // can't close root leaf
+  const { parent } = result;
+  const sibling = parent.children.find(c => c !== result.node);
+  // Replace parent with sibling in grandparent
+  const gp = findNodeAndParent(tab.rootNode, paneId);
+  // Simpler: rebuild by replacing parent in the tree
+  const replaceInTree = (root, target, replacement) => {
+    if (root === target) return replacement;
+    if (root.type === "split") {
+      root.children = root.children.map(c => replaceInTree(c, target, replacement));
+    }
+    return root;
+  };
+  tab.rootNode = replaceInTree(tab.rootNode, parent, sibling);
+  // Clean up the closed pane
+  const pane = paneMap.get(paneId);
+  if (pane) { pane.term.dispose(); paneMap.delete(paneId); }
+  window.wotch.killPty(paneId);
+  // Set active to first remaining pane
+  tab.activePaneId = getAllPaneIds(tab.rootNode)[0];
+  renderSplitNode(tab.rootNode, tab.el);
+  fitAllPanes(tab.rootNode);
+  const nextPane = paneMap.get(tab.activePaneId);
+  if (nextPane) nextPane.term.focus();
+}
+
+function navigatePane(direction) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const allPanes = getAllPaneIds(tab.rootNode);
+  if (allPanes.length <= 1) return;
+  const idx = allPanes.indexOf(tab.activePaneId);
+  let next;
+  if (direction === "ArrowDown" || direction === "ArrowRight") next = (idx + 1) % allPanes.length;
+  else next = (idx - 1 + allPanes.length) % allPanes.length;
+  tab.activePaneId = allPanes[next];
+  const pane = paneMap.get(tab.activePaneId);
+  if (pane) pane.term.focus();
+}
+
 // ── Tab management ─────────────────────────────────────
 async function createTab(cwdOverride, sshProfile) {
   tabCounter++;
@@ -318,44 +496,22 @@ async function createTab(cwdOverride, sshProfile) {
     ? `SSH: ${sshProfile.name}`
     : (currentProject ? currentProject.name : `Session ${tabCounter}`);
 
-  // Terminal instance
-  const term = new Terminal({
-    fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace",
-    fontSize: 12,
-    lineHeight: 1.3,
-    cursorBlink: true,
-    cursorStyle: "bar",
-    theme: getTermTheme(),
-  });
+  // Create the root pane for this tab
+  const rootLeaf = createPaneNode(cwd);
+  const paneId = rootLeaf.paneId;
 
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  const searchAddon = new SearchAddon();
-  term.loadAddon(searchAddon);
-
-  // DOM
+  // DOM — tab container wraps the pane tree
   const containerEl = document.createElement("div");
   containerEl.className = "terminal-container";
   containerEl.dataset.tabId = tabId;
+  containerEl.style.display = "none";
+  containerEl.style.cssText += "position:absolute;inset:0;display:none;flex-direction:column;";
   terminalsEl.appendChild(containerEl);
+  renderSplitNode(rootLeaf, containerEl);
 
-  term.open(containerEl);
-
-  // Prevent xterm from swallowing tab-navigation and split-pane shortcuts
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.ctrlKey && e.key === "Tab") return false;
-    if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") return false;
-    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "E")) return false;
-    if (e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return false;
-    return true;
-  });
-
-  // Wire PTY/SSH ↔ xterm (same IPC for both — main process routes transparently)
-  term.onData((data) => window.wotch.writePty(tabId, data));
-  term.onResize(({ cols, rows }) => window.wotch.resizePty(tabId, cols, rows));
-
+  // Tab object — now holds a pane tree
   const tab = {
-    id: tabId, name, term, fitAddon, searchAddon, el: containerEl, cwd,
+    id: tabId, name, rootNode: rootLeaf, activePaneId: paneId, el: containerEl,
     connectionType: sshProfile ? "ssh" : "local",
     profileId: sshProfile ? sshProfile.id : null,
   };
@@ -363,6 +519,10 @@ async function createTab(cwdOverride, sshProfile) {
 
   renderTabBar();
   activateTab(tabId);
+
+  // Get the pane's term for SSH / local PTY setup
+  const pane = paneMap.get(paneId);
+  const term = pane ? pane.term : null;
 
   if (sshProfile) {
     // Ensure panel is expanded so credential/host-key dialogs are visible
@@ -392,14 +552,14 @@ async function createTab(cwdOverride, sshProfile) {
       password = null;
     }
   } else {
-    // Local PTY
-    await window.wotch.createPty(tabId, cwd);
+    // Local PTY — use paneId as the PTY key
+    await window.wotch.createPty(paneId, cwd);
 
     // Auto-launch Claude if enabled
     try {
       const s = await window.wotch.getSettings();
       if (s.autoLaunchClaude) {
-        setTimeout(() => window.wotch.writePty(tabId, "claude\r"), 500);
+        setTimeout(() => window.wotch.writePty(paneId, "claude\r"), 500);
       }
     } catch { /* ignore */ }
   }
@@ -411,17 +571,19 @@ function activateTab(tabId) {
   activeTabId = tabId;
 
   tabs.forEach((t) => {
-    t.el.classList.toggle("active", t.id === tabId);
+    const isActive = t.id === tabId;
+    t.el.style.display = isActive ? "flex" : "none";
   });
 
   renderTabBar();
 
-  // Fit after a frame so the container is visible
+  // Fit all panes in the active tab after a frame
   requestAnimationFrame(() => {
     const tab = tabs.find((t) => t.id === tabId);
     if (tab) {
-      tab.fitAddon.fit();
-      tab.term.focus();
+      fitAllPanes(tab.rootNode);
+      const pane = paneMap.get(tab.activePaneId);
+      if (pane) pane.term.focus();
     }
   });
 }
@@ -448,8 +610,13 @@ function closeTab(tabId) {
     }
   }
 
-  window.wotch.killPty(tabId);
-  tabs[idx].term.dispose();
+  // Kill all panes in this tab's tree
+  const allPanes = getAllPaneIds(tabs[idx].rootNode);
+  for (const pid of allPanes) {
+    window.wotch.killPty(pid);
+    const p = paneMap.get(pid);
+    if (p) { p.term.dispose(); paneMap.delete(pid); }
+  }
   tabs[idx].el.remove();
   tabs.splice(idx, 1);
 
@@ -531,15 +698,23 @@ function renderTabBar() {
 // ── PTY data from main process ─────────────────────────
 window.wotch.onPtyData(({ tabId, data }) => {
   if (typeof tabId !== "string" || typeof data !== "string") return;
+  // Route to pane (PTY key is paneId, not tabId)
+  const pane = paneMap.get(tabId);
+  if (pane) { pane.term.write(data); return; }
+  // Fallback: legacy tabId lookup (for SSH connections that use tabId)
   const tab = tabs.find((t) => t.id === tabId);
-  if (tab) tab.term.write(data);
+  if (tab) {
+    const firstPane = paneMap.get(tab.activePaneId || getAllPaneIds(tab.rootNode)[0]);
+    if (firstPane) firstPane.term.write(data);
+  }
 });
 
 window.wotch.onPtyExit(({ tabId, exitCode }) => {
   if (typeof tabId !== "string" || typeof exitCode !== "number") return;
-  const tab = tabs.find((t) => t.id === tabId);
-  if (tab) {
-    tab.term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
+  // Route to pane
+  const pane = paneMap.get(tabId);
+  if (pane) {
+    pane.term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
     tabStatuses[tabId] = { state: exitCode === 0 ? "idle" : "error", description: "Exited" };
     renderTabBar();
   }
@@ -559,9 +734,12 @@ window.wotch.onExpansionState((payload) => {
 
   if (expanded) {
     requestAnimationFrame(() => {
-      tabs.forEach((t) => t.fitAddon.fit());
+      tabs.forEach((t) => fitAllPanes(t.rootNode));
       const active = tabs.find((t) => t.id === activeTabId);
-      if (active) active.term.focus();
+      if (active) {
+        const pane = paneMap.get(active.activePaneId);
+        if (pane) pane.term.focus();
+      }
     });
     // Refresh git status when expanding
     if (currentProject) refreshGitStatus();
@@ -760,6 +938,24 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     searchOpen ? closeSearch() : openSearch();
   }
+  // Ctrl+Shift+D — split pane horizontal
+  if (e.ctrlKey && e.shiftKey && e.key === "D") {
+    e.preventDefault();
+    splitActivePane("horizontal");
+    return;
+  }
+  // Ctrl+Shift+E — split pane vertical
+  if (e.ctrlKey && e.shiftKey && e.key === "E") {
+    e.preventDefault();
+    splitActivePane("vertical");
+    return;
+  }
+  // Alt+Arrow — navigate panes
+  if (e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+    e.preventDefault();
+    navigatePane(e.key);
+    return;
+  }
   // Ctrl+Tab / Ctrl+Shift+Tab — cycle tabs
   if (e.ctrlKey && e.key === "Tab") {
     e.preventDefault();
@@ -856,6 +1052,7 @@ const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
 const setDisplay = document.getElementById("set-display");
 const setPosition = document.getElementById("set-position");
+const setHoverEnabled = document.getElementById("set-hover-enabled");
 const setHooksEnabled = document.getElementById("set-hooks-enabled");
 const setMcpEnabled = document.getElementById("set-mcp-enabled");
 const hooksDot = document.getElementById("hooks-dot");
@@ -968,6 +1165,7 @@ async function loadSettingsUI() {
     }
     renderSshProfiles();
     // Integration settings
+    if (setHoverEnabled) setHoverEnabled.classList.toggle("on", s.hoverEnabled !== false);
     if (setHooksEnabled) setHooksEnabled.classList.toggle("on", s.integrationHooksEnabled !== false);
     if (setMcpEnabled) setMcpEnabled.classList.toggle("on", s.integrationMcpEnabled !== false);
     // Bridge settings
@@ -1003,6 +1201,7 @@ function debouncedSave() {
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
       position: setPosition ? setPosition.value : "top",
+      hoverEnabled: setHoverEnabled ? setHoverEnabled.classList.contains("on") : true,
       integrationHooksEnabled: setHooksEnabled ? setHooksEnabled.classList.contains("on") : true,
       integrationMcpEnabled: setMcpEnabled ? setMcpEnabled.classList.contains("on") : true,
       integrationBridgeEnabled: setBridgeEnabled ? setBridgeEnabled.classList.contains("on") : true,
@@ -1046,6 +1245,12 @@ if (setDisplay) {
 }
 if (setPosition) {
   setPosition.addEventListener("change", debouncedSave);
+}
+if (setHoverEnabled) {
+  setHoverEnabled.addEventListener("click", () => {
+    setHoverEnabled.classList.toggle("on");
+    debouncedSave();
+  });
 }
 if (setHooksEnabled) {
   setHooksEnabled.addEventListener("click", () => {
@@ -2643,6 +2848,13 @@ function initAgentListeners() {
   });
 }
 
+// Split pane commands
+COMMANDS.push(
+  { name: "Split Pane: Horizontal", shortcut: "Ctrl+Shift+D", action: () => splitActivePane("horizontal") },
+  { name: "Split Pane: Vertical", shortcut: "Ctrl+Shift+E", action: () => splitActivePane("vertical") },
+  { name: "Navigate Pane: Next", shortcut: "Alt+Arrow", action: () => navigatePane("ArrowRight") },
+);
+
 // Tab navigation commands
 COMMANDS.push(
   { name: "Next Tab", shortcut: "Ctrl+Tab", action: () => {
@@ -2670,7 +2882,19 @@ COMMANDS.push(
 // ── Init ───────────────────────────────────────────────
 // Auto-detect projects on startup and pre-select first VS Code one
 (async () => {
-  await createTab();
+  // Restore tabs with saved working directories, or create default tab
+  try {
+    const s = await window.wotch.getSettings();
+    if (s.lastTabCwds && s.lastTabCwds.length > 0) {
+      for (const cwd of s.lastTabCwds) await createTab(cwd);
+      // Clear saved cwds after restore
+      await window.wotch.saveSettings({ lastTabCwds: [] });
+    } else {
+      await createTab();
+    }
+  } catch {
+    await createTab();
+  }
 
   // Load initial pin state and theme
   try {
