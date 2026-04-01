@@ -63,8 +63,12 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "electron": "^35.7.5",
-    "electron-builder": "^25.0.0",
-    "electron-rebuild": "^3.2.9"
+    "electron-builder": "^25.0.0"
+  },
+  "overrides": {
+    "tar": "^7.5.13",
+    "@tootallnate/once": "^3.0.1"
   }
 }
