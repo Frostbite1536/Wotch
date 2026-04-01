@@ -572,35 +572,50 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 5px 12px;
+      padding: 4px 10px;
       border-top: 1px solid var(--border);
       flex-shrink: 0;
+      gap: 8px;
+      min-height: 0;
     }
 
     .shortcuts {
       display: flex;
-      gap: 12px;
+      gap: 8px;
+      flex-wrap: wrap;
+      overflow: hidden;
+      min-width: 0;
     }
 
     .shortcut {
       display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: 4px;
+      gap: 1px;
+    }
+
+    .shortcut .shortcut-keys {
+      display: flex;
+      align-items: center;
+      gap: 1px;
     }
 
     .shortcut kbd {
-      padding: 1px 5px;
-      border-radius: 4px;
-      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 8px;
       background: rgba(148, 163, 184, 0.1);
       border: 1px solid rgba(148, 163, 184, 0.15);
       color: var(--text-dim);
       font-family: var(--font);
+      white-space: nowrap;
     }
 
-    .shortcut span {
-      font-size: 9px;
+    .shortcut span.shortcut-label {
+      font-size: 7px;
       color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     #version {
@@ -1118,12 +1133,7 @@
     /* Side-positioned bottom bar: wrap shortcuts when panel is narrow */
     body.position-left .shortcuts,
     body.position-right .shortcuts {
-      flex-wrap: wrap;
       gap: 6px;
-    }
-    body.position-left .shortcut span,
-    body.position-right .shortcut span {
-      display: none;
     }
 
     /* Side-positioned resize handle: vertical drag on the side edge */
@@ -1489,12 +1499,11 @@
 
     <div id="bottom-bar">
       <div class="shortcuts" id="shortcuts-bar">
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+`</kbd><span>Toggle</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+S</kbd><span>Checkpoint</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+T</kbd><span>New Tab</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+F</kbd><span>Search</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+L</kbd><span>Chat</span></div>
-        <div class="shortcut"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+P</kbd><span>Commands</span></div>
+        <div class="shortcut"><div class="shortcut-keys"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+`</kbd></div><span class="shortcut-label">Toggle</span></div>
+        <div class="shortcut"><div class="shortcut-keys"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+S</kbd></div><span class="shortcut-label">Save</span></div>
+        <div class="shortcut"><div class="shortcut-keys"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+T</kbd></div><span class="shortcut-label">Tab</span></div>
+        <div class="shortcut"><div class="shortcut-keys"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+F</kbd></div><span class="shortcut-label">Search</span></div>
+        <div class="shortcut"><div class="shortcut-keys"><kbd class="shortcut-mod">Ctrl</kbd><kbd>+Shift+P</kbd></div><span class="shortcut-label">Commands</span></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span id="version">v1.3</span>
