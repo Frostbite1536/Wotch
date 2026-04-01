@@ -28,7 +28,8 @@
       "category": "Utility"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "minimumSystemVersion": "13.0"
     },
     "publish": [
       {
@@ -49,6 +50,7 @@
     ]
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
@@ -57,7 +59,6 @@
     "electron-updater": "^6.0.0",
     "node-pty": "^1.0.0",
     "ssh2": "^1.17.0",
-    "@anthropic-ai/sdk": "^0.39.0",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },

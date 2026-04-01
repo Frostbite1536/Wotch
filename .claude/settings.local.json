@@ -53,7 +53,12 @@
       "Bash(bash /tmp/accurate_audit.sh)",
       "Bash(/tmp/plugin_panel_check.sh:*)",
       "Bash(bash /tmp/plugin_panel_check.sh)",
-      "Bash(grep -E \"^\\\\| \\\\`agent-\" /c/Users/LCM/Documents/wotch/wotch/roadmap/04-agent-sdk-integration/01-architecture.md)"
+      "Bash(grep -E \"^\\\\| \\\\`agent-\" /c/Users/LCM/Documents/wotch/wotch/roadmap/04-agent-sdk-integration/01-architecture.md)",
+      "Bash(find /c/Users/LCM/Documents/wotch/wotch/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx -o -name *.swift \\\\\\))",
+      "Bash(find /c/Users/LCM/Documents/wotch/wotch -path ./node_modules -prune -o -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx -o -name *.swift -o -name *.html -o -name *.css \\\\\\) -print)",
+      "Bash(timeout 8 npx electron . --no-sandbox --enable-logging)",
+      "Bash(timeout 6 npx electron . --no-sandbox --enable-logging)",
+      "Bash(timeout 10 npx electron . --no-sandbox --enable-logging)"
     ]
   }
 }

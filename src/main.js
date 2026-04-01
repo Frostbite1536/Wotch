@@ -6,9 +6,12 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { execSync, execFileSync, exec } = require("child_process");
 const vm = require("vm");
-const { Client: SSHClient } = require("ssh2");
-const { ClaudeIntegrationManager } = require("./claude-integration-manager");
-const { ApiServer } = require("./api-server");
+let SSHClient;
+try { SSHClient = require("ssh2").Client; } catch { SSHClient = null; console.warn("[wotch] ssh2 not installed — SSH features disabled"); }
+let ClaudeIntegrationManager;
+try { ({ ClaudeIntegrationManager } = require("./claude-integration-manager")); } catch { ClaudeIntegrationManager = null; console.warn("[wotch] claude-integration-manager not found — integration features disabled"); }
+let ApiServer;
+try { ({ ApiServer } = require("./api-server")); } catch { ApiServer = null; console.warn("[wotch] api-server not found — API features disabled"); }
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -893,7 +896,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   };
 
@@ -3788,14 +3791,28 @@ class BridgeServer {
 const bridgeServer = new BridgeServer();
 
 // ── Integration Manager ────────────────────────────────────────────
-const integrationManager = new ClaudeIntegrationManager({
-  hooksEnabled: settings.integrationHooksEnabled,
-  hooksPort: settings.integrationHooksPort,
-  mcpEnabled: settings.integrationMcpEnabled,
-  mcpIpcPort: settings.integrationMcpIpcPort,
-  autoConfigureHooks: settings.integrationAutoConfigureHooks,
-  autoRegisterMCP: settings.integrationAutoRegisterMCP,
-});
+const integrationManager = ClaudeIntegrationManager
+  ? new ClaudeIntegrationManager({
+      hooksEnabled: settings.integrationHooksEnabled,
+      hooksPort: settings.integrationHooksPort,
+      mcpEnabled: settings.integrationMcpEnabled,
+      mcpIpcPort: settings.integrationMcpIpcPort,
+      autoConfigureHooks: settings.integrationAutoConfigureHooks,
+      autoRegisterMCP: settings.integrationAutoRegisterMCP,
+    })
+  : new (require("events").EventEmitter)(); // stub if module missing
+if (!ClaudeIntegrationManager) {
+  // Stub methods so callers don't crash
+  integrationManager.getAggregateStatus = () => ({ state: "idle", description: "" });
+  integrationManager.getStatus = () => ({ state: "idle", description: "" });
+  integrationManager.getIntegrationStatus = () => ({ hooks: { active: false }, mcp: { registered: false } });
+  integrationManager.statusDetector = { tabs: new Map() };
+  integrationManager.feedRegex = () => {};
+  integrationManager.configureClaudeHooks = () => 0;
+  integrationManager.registerMCPServer = () => false;
+  integrationManager.start = async () => {};
+  integrationManager.stop = async () => {};
+}
 
 // Wire the enhanced detector's status-changed events to renderer + API broadcast
 integrationManager.on("status-changed", (tabId, status) => {
@@ -3832,6 +3849,7 @@ integrationManager.on("notification", (event) => {
 let apiServer = null;
 
 function createApiServer() {
+  if (!ApiServer) { console.warn("[wotch] API server module not available"); return; }
   apiServer = new ApiServer({
     ptyProcesses,
     sshSessions,
@@ -4893,6 +4911,7 @@ ipcMain.on("resize-window", (_event, size) => {
 // ── SSH IPC handlers ───────────────────────────────────────────────
 
 ipcMain.handle("ssh-connect", async (_event, { tabId, profileId, password }) => {
+  if (!SSHClient) throw new Error("SSH not available — install ssh2 module (npm install ssh2)");
   return createSshSession(tabId, profileId, password);
 });
 

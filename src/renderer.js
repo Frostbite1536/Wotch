@@ -1,6 +1,8 @@
-import { Terminal } from "../node_modules/@xterm/xterm/lib/xterm.js";
-import { FitAddon } from "../node_modules/@xterm/addon-fit/lib/addon-fit.js";
-import { SearchAddon } from "../node_modules/@xterm/addon-search/lib/addon-search.js";
+// xterm.js UMD modules loaded via <script> tags in index.html
+// UMD wraps as: window.Terminal.Terminal, window.FitAddon.FitAddon, etc.
+const Terminal = (window.Terminal && window.Terminal.Terminal) || window.Terminal;
+const FitAddon = (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon;
+const SearchAddon = (window.SearchAddon && window.SearchAddon.SearchAddon) || window.SearchAddon;
 
 // ── State ──────────────────────────────────────────────
 let tabs = [];          // { id, name, term, fitAddon, searchAddon, el, cwd }
@@ -338,6 +340,15 @@ async function createTab(cwdOverride, sshProfile) {
   terminalsEl.appendChild(containerEl);
 
   term.open(containerEl);
+
+  // Prevent xterm from swallowing tab-navigation and split-pane shortcuts
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.ctrlKey && e.key === "Tab") return false;
+    if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") return false;
+    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "E")) return false;
+    if (e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return false;
+    return true;
+  });
 
   // Wire PTY/SSH ↔ xterm (same IPC for both — main process routes transparently)
   term.onData((data) => window.wotch.writePty(tabId, data));
@@ -748,6 +759,23 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.key === "f") {
     e.preventDefault();
     searchOpen ? closeSearch() : openSearch();
+  }
+  // Ctrl+Tab / Ctrl+Shift+Tab — cycle tabs
+  if (e.ctrlKey && e.key === "Tab") {
+    e.preventDefault();
+    if (tabs.length > 1) {
+      const idx = tabs.findIndex(t => t.id === activeTabId);
+      const next = e.shiftKey ? (idx - 1 + tabs.length) % tabs.length : (idx + 1) % tabs.length;
+      activateTab(tabs[next].id);
+    }
+    return;
+  }
+  // Ctrl+1-9 — jump to tab by index
+  if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
+    e.preventDefault();
+    const n = parseInt(e.key) - 1;
+    if (n < tabs.length) activateTab(tabs[n].id);
+    return;
   }
   if (e.key === "Escape") {
     if (sshCredentialOverlay.classList.contains("open")) document.getElementById("btn-ssh-cred-cancel").click();
@@ -2614,6 +2642,18 @@ function initAgentListeners() {
     }
   });
 }
+
+// Tab navigation commands
+COMMANDS.push(
+  { name: "Next Tab", shortcut: "Ctrl+Tab", action: () => {
+    const idx = tabs.findIndex(t => t.id === activeTabId);
+    if (tabs.length > 1) activateTab(tabs[(idx + 1) % tabs.length].id);
+  }},
+  { name: "Previous Tab", shortcut: "Ctrl+Shift+Tab", action: () => {
+    const idx = tabs.findIndex(t => t.id === activeTabId);
+    if (tabs.length > 1) activateTab(tabs[(idx - 1 + tabs.length) % tabs.length].id);
+  }},
+);
 
 // Add "Run Agent" command to palette
 COMMANDS.push(

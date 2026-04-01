@@ -75,6 +75,7 @@ jobs:
         run: npx electron-builder --mac --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -111,6 +112,7 @@ jobs:
         run: npx electron-builder --mac --arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
