@@ -110,6 +110,10 @@ Plan 4 (Agent SDK)  ── coordinates via bridge + MCP ───────┘
 
 **Recommended sequence:** 0 → 1 → 2 → 3 → 4. Plan 0 is the highest priority — it replaces regex heuristics with structured data, benefiting every subsequent plan. Each plan is self-contained and can be merged independently, but later plans benefit from earlier infrastructure.
 
+## OpenClaude Compatibility
+
+All plans are compatible with [OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude), a fork that routes Claude Code through any OpenAI-compatible LLM. Since OpenClaude reads the same config files (`~/.claude/settings.json` for hooks, `~/.claude/ide/` for bridge lockfiles), the three-channel integration works transparently. Wotch's launch command is configurable in Settings (default `claude`, change to `openclaude`).
+
 ---
 
 ## Constraints

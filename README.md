@@ -34,6 +34,7 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Auto-update** — checks GitHub Releases for new versions
 - **System tray** — right-click tray icon to toggle or quit
 - **Claude Code integration** — three-channel architecture: hooks (status events), MCP (tool access), IDE bridge (bidirectional WebSocket)
+- **[OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude) compatible** — use any LLM (GPT-4o, DeepSeek, Gemini, Llama, etc.) instead of Claude. Set the launch command to `openclaude` in Settings
 - **Plugin SDK** — extend Wotch with custom commands, status detectors, and panel views
 - **Agent SDK** — run autonomous AI agents with graduated trust, sub-agent spawning, and tool-specific UI rendering
 - **Local API** — HTTP + WebSocket API for external tool integration
@@ -69,6 +70,22 @@ No Node.js or build tools required.
 - Click the pin icon to pin the panel open while you work in other windows
 - Disable hover in Settings if you prefer hotkey-only mode (`Ctrl+\``)
 - Right-click the system tray icon to toggle or quit
+
+## Using with OpenClaude (Any LLM)
+
+Wotch works with [OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude), which lets you use any OpenAI-compatible model (GPT-4o, DeepSeek, Gemini, Llama, Mistral, etc.) instead of Claude.
+
+1. Install OpenClaude: `npm install -g openclaude`
+2. Set your environment variables:
+   ```bash
+   export CLAUDE_CODE_USE_OPENAI=1
+   export OPENAI_API_KEY=sk-your-key
+   export OPENAI_MODEL=gpt-4o          # or deepseek-chat, llama3.3:70b, etc.
+   ```
+3. In Wotch Settings, set **Launch command** to `openclaude` and enable **Auto-launch command**
+4. New tabs will auto-run OpenClaude with your configured model
+
+All three integration channels (hooks, MCP, IDE bridge) work with OpenClaude since it's built on the same Claude Code codebase and reads the same config files (`~/.claude/settings.json`, `~/.claude/ide/`).
 
 ## Development Setup
 

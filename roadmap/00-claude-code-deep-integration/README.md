@@ -37,6 +37,10 @@ These three channels replace the fragile regex-based status detection with relia
 
 - Modifying Claude Code's source code (we only use public configuration surfaces)
 - ~~Implementing Claude Code's IDE bridge protocol~~ — **Now implemented**: see `04-bridge-adapter.md` for the WebSocket MCP bridge using lockfile discovery
+
+### OpenClaude Compatibility
+
+All three channels (hooks, MCP, bridge) work with [OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude) since it reads the same config files as Claude Code (`~/.claude/settings.json`, `~/.claude/ide/`). Wotch's Settings > Launch command can be set to `openclaude` to auto-launch with any LLM.
 - Running Claude Code as a subprocess (Wotch observes Claude Code running in its terminals)
 - Replacing the terminal — Claude Code still runs in xterm.js tabs
 - Multi-user or remote Claude Code instances
