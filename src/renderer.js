@@ -332,7 +332,7 @@ function createPaneNode(cwd) {
   term.attachCustomKeyEventHandler((e) => {
     if (e.ctrlKey && e.key === "Tab") return false;
     if (e.ctrlKey && !e.shiftKey && e.key >= "1" && e.key <= "9") return false;
-    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "E")) return false;
+    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "E" || e.key === "W")) return false;
     if (e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return false;
     return true;
   });
@@ -934,6 +934,13 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.key === "f") {
     e.preventDefault();
     searchOpen ? closeSearch() : openSearch();
+  }
+  // Ctrl+Shift+W — close active pane (or tab if only one pane)
+  if (e.ctrlKey && e.shiftKey && e.key === "W") {
+    e.preventDefault();
+    const tab = getActiveTab();
+    if (tab) closePaneById(tab.activePaneId);
+    return;
   }
   // Ctrl+Shift+D — split pane horizontal
   if (e.ctrlKey && e.shiftKey && e.key === "D") {
@@ -2855,6 +2862,7 @@ function initAgentListeners() {
 COMMANDS.push(
   { name: "Split Pane: Horizontal", shortcut: "Ctrl+Shift+D", action: () => splitActivePane("horizontal") },
   { name: "Split Pane: Vertical", shortcut: "Ctrl+Shift+E", action: () => splitActivePane("vertical") },
+  { name: "Close Pane", shortcut: "Ctrl+Shift+W", action: () => { const tab = getActiveTab(); if (tab) closePaneById(tab.activePaneId); } },
   { name: "Navigate Pane: Next", shortcut: "Alt+Arrow", action: () => navigatePane("ArrowRight") },
 );
 
