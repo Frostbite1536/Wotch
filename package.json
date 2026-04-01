@@ -63,7 +63,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^35.7.5",
     "electron-builder": "^25.0.0",
     "electron-rebuild": "^3.2.9"
   }
