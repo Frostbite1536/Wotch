@@ -559,7 +559,8 @@ async function createTab(cwdOverride, sshProfile) {
     try {
       const s = await window.wotch.getSettings();
       if (s.autoLaunchClaude) {
-        setTimeout(() => window.wotch.writePty(paneId, "claude\r"), 500);
+        const cmd = s.launchCommand || "claude";
+        setTimeout(() => window.wotch.writePty(paneId, cmd + "\r"), 500);
       }
     } catch { /* ignore */ }
   }
@@ -1054,6 +1055,7 @@ const setRememberPin = document.getElementById("set-remember-pin");
 const setDefaultShell = document.getElementById("set-default-shell");
 const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
+const setLaunchCommand = document.getElementById("set-launch-command");
 const setDisplay = document.getElementById("set-display");
 const setPosition = document.getElementById("set-position");
 const setHoverEnabled = document.getElementById("set-hover-enabled");
@@ -1156,6 +1158,7 @@ async function loadSettingsUI() {
     setDefaultShell.value = s.defaultShell || "";
     if (setTheme) setTheme.value = s.theme || "dark";
     if (setAutoLaunchClaude) setAutoLaunchClaude.classList.toggle("on", s.autoLaunchClaude || false);
+    if (setLaunchCommand) setLaunchCommand.value = s.launchCommand || "claude";
     if (setPosition) setPosition.value = s.position || "top";
     // Populate display selector
     if (setDisplay) {
@@ -1203,6 +1206,7 @@ function debouncedSave() {
       defaultShell: setDefaultShell.value.trim(),
       theme: setTheme ? setTheme.value : "dark",
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
+      launchCommand: setLaunchCommand ? setLaunchCommand.value.trim() || "claude" : "claude",
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
       position: setPosition ? setPosition.value : "top",
       hoverEnabled: setHoverEnabled ? setHoverEnabled.classList.contains("on") : true,
@@ -1219,8 +1223,8 @@ function debouncedSave() {
 }
 
 // Wire up number inputs
-[setExpandedWidth, setExpandedHeight, setPillWidth, setCollapseDelay, setHoverPadding, setDefaultShell].forEach((el) => {
-  el.addEventListener("input", debouncedSave);
+[setExpandedWidth, setExpandedHeight, setPillWidth, setCollapseDelay, setHoverPadding, setDefaultShell, setLaunchCommand].forEach((el) => {
+  if (el) el.addEventListener("input", debouncedSave);
 });
 
 // Wire up toggles

@@ -79,6 +79,7 @@ const DEFAULT_SETTINGS = {
   pinned: false,             // remember pin state across restarts
   theme: "dark",
   autoLaunchClaude: false,
+  launchCommand: "claude",       // command to run on new tab (e.g. "claude", "openclaude")
   displayIndex: 0,           // 0 = primary display
   position: "top",           // "top", "left", or "right"
   sshProfiles: [],           // saved SSH connection profiles
@@ -4529,7 +4530,7 @@ ipcMain.handle("get-settings", () => ({ ...settings }));
 const ALLOWED_SETTING_KEYS = [
   "pillWidth", "pillHeight", "expandedWidth", "expandedHeight",
   "hoverPadding", "hoverEnabled", "collapseDelay", "mousePollingMs", "defaultShell",
-  "startExpanded", "pinned", "theme", "autoLaunchClaude",
+  "startExpanded", "pinned", "theme", "autoLaunchClaude", "launchCommand",
   "displayIndex", "position",
   "integrationHooksEnabled", "integrationMcpEnabled",
   "integrationAutoConfigureHooks", "integrationAutoRegisterMCP",
