@@ -1378,7 +1378,7 @@ async function createSshSession(tabId, profileId, password, reconnectAttempts = 
 //
 class ClaudeStatusDetector {
   constructor() {
-    this.tabs = new Map(); // tabId → { state, description, buffer, lastActivity, claudeActive }
+    this.tabs = new Map(); // tabId → { state, description, buffer, lastActivity, claudeActive, aiType }
     this.previousStates = new Map(); // tabId → previous state
     this.broadcastTimer = null;
   }
@@ -1389,7 +1389,8 @@ class ClaudeStatusDetector {
       description: "",
       buffer: "",         // rolling buffer of recent clean text
       lastActivity: 0,
-      claudeActive: false,
+      claudeActive: false,  // true when any supported AI CLI is active
+      aiType: null,         // "claude" | "gemini" | null
       recentFiles: [],
       recentTools: [],
     });
@@ -1421,8 +1422,7 @@ class ClaudeStatusDetector {
       tab.buffer = tab.buffer.slice(-2000);
     }
 
-    // ── Detect if Claude Code session is active ──
-    // Claude Code shows distinctive patterns when launched
+    // ── Detect if a supported AI CLI session is active ──
     if (!tab.claudeActive) {
       if (
         /claude\s/i.test(clean) ||
@@ -1431,6 +1431,14 @@ class ClaudeStatusDetector {
         /claude\.ai/i.test(clean)
       ) {
         tab.claudeActive = true;
+        tab.aiType = "claude";
+      } else if (
+        /gemini/i.test(clean) ||
+        /google.*ai/i.test(clean) ||
+        /gemini\.google\.com/i.test(clean)
+      ) {
+        tab.claudeActive = true;
+        tab.aiType = "gemini";
       }
     }
 
@@ -1490,13 +1498,14 @@ class ClaudeStatusDetector {
         /\[Y\/n\]/i,
         /approve|accept|reject|deny/i,
       ],
-      // Done / Success
+      // Done / Success (Claude Code + Gemini CLI)
       done: [
-        /[✓✔]\s*(.{0,60})/u,
+        /[✓✔◆]\s*(.{0,60})/u,
         /(?:Done|Complete|Finished|Success|Applied)\b/i,
         /changes applied/i,
         /wrote \d+ file/i,
         /updated \d+ file/i,
+        /task complete/i,
       ],
       // Error
       error: [
@@ -1676,11 +1685,12 @@ class ClaudeStatusDetector {
             (tab.state === "done" || tab.state === "error")) {
           if (mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
             try {
+              const aiLabel = tab.aiType === "gemini" ? "Gemini" : "Claude";
               const notif = new Notification({
                 title: "Wotch",
                 body: tab.state === "error"
-                  ? `Claude error: ${tab.description || "Unknown"}`
-                  : `Claude finished: ${tab.description || "Task complete"}`,
+                  ? `${aiLabel} error: ${tab.description || "Unknown"}`
+                  : `${aiLabel} finished: ${tab.description || "Task complete"}`,
                 silent: false,
               });
               notif.show();
