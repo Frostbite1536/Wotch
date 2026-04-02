@@ -1433,8 +1433,7 @@ class ClaudeStatusDetector {
         tab.claudeActive = true;
         tab.aiType = "claude";
       } else if (
-        /gemini/i.test(clean) ||
-        /google.*ai/i.test(clean) ||
+        /Gemini CLI/i.test(clean) ||
         /gemini\.google\.com/i.test(clean)
       ) {
         tab.claudeActive = true;
@@ -1500,12 +1499,12 @@ class ClaudeStatusDetector {
       ],
       // Done / Success (Claude Code + Gemini CLI)
       done: [
-        /[✓✔◆]\s*(.{0,60})/u,
+        /[✓✔]\s*(.{0,60})/u,
+        /^◆\s+(.{0,60})/um,         // Gemini CLI: diamond only at line start
         /(?:Done|Complete|Finished|Success|Applied)\b/i,
         /changes applied/i,
         /wrote \d+ file/i,
         /updated \d+ file/i,
-        /task complete/i,
       ],
       // Error
       error: [
