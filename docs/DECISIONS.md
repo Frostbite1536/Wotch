@@ -99,6 +99,138 @@ Significant architectural and product decisions, recorded for future context.
 
 ---
 
+## 2026-04-02: claudeActive / aiType Stickiness — Problem Analysis & Proposed Fix
+
+**Status:** Unimplemented. Recorded here for the next engineer who picks this up.
+
+**The Problem:**
+`claudeActive` (and its sibling `aiType`, added during Gemini CLI integration) are
+one-way latches on the per-tab state object in `ClaudeStatusDetector`. Once any
+AI CLI output is seen in a tab, the flag is set to `true` and never cleared within
+that tab's lifetime, even after the user exits the AI and returns to a plain shell.
+Consequence: if a user runs `claude`, exits, then runs `gemini` in the same tab,
+`aiType` stays `"claude"` — notifications mislabel, and the status detector keeps
+evaluating AI-specific patterns on all shell output indefinitely.
+
+**Root Cause:**
+The flag was designed to answer "has this tab ever seen an AI CLI?" to gate pattern
+matching and avoid false-positive status indicators during normal shell use. That's
+a sound goal, but it conflates two different questions:
+
+1. *Has* an AI CLI ever run here? (one-way latch — current behaviour)
+2. *Is* an AI CLI currently running? (dynamic — what we actually need)
+
+The latch is appropriate for (1) but wrong for (2).
+
+**Options Considered:**
+
+**Option A — Reset on shell prompt detection (simple, fragile)**
+When the existing "shell prompt" idle pattern fires, also reset `claudeActive` and
+`aiType`. Minimal code change.
+- *Problem:* The prompt patterns (`[❯➜→▶$#%]\s*$`, `^\s*\$\s*$`) are already
+  heuristic. AI CLIs sometimes emit shell-like characters in code blocks, tool
+  output, or example commands. A single false match would flicker the detector off
+  mid-session and immediately re-latch once the next AI output appears — creating a
+  brief window of wrong state on every false trigger.
+
+**Option B — PTY process tracking (precise, platform-specific)**
+Read the PTY's foreground process group (`ioctl TIOCGPGRP` or `/proc/{pid}/status`
+on Linux) to determine what's actually running, and derive `aiType` directly from
+the process name (`claude`, `gemini`, etc.) rather than from output content.
+- *Problem:* Requires platform-specific native code. `/proc` is Linux-only; macOS
+  needs `ps` or `libproc`; Windows needs WMI or `QueryFullProcessImageName`. Doesn't
+  work at all for SSH tabs where the process is remote. Adds ongoing maintenance
+  surface for OS differences.
+
+**Option C — Hook-based session boundaries for Claude Code (precise, asymmetric)**
+The hooks system already delivers `SessionStart` and `SessionEnd` events from Claude
+Code. Wire `SessionEnd` to immediately reset `claudeActive` / `aiType`. For
+hook-free CLIs like Gemini, fall back to heuristics.
+- *Problem:* Asymmetric — Claude Code gets precise session edges, Gemini and any
+  future AI CLIs don't. Hooks may not always fire (timing edge cases, misconfigured
+  install). Doesn't solve the general problem, just mitigates it for one CLI.
+
+**Option D — Debounced idle reset (simple, eventual correctness)**
+Add a timer: after the tab has been in the "idle" state continuously for N seconds
+(e.g. 10s), reset `claudeActive` and `aiType`. The status detector returns to
+"watching for any AI."
+- *Problem:* 10-second delay before `aiType` can change. If the user exits Claude
+  Code and immediately types `gemini`, the first 10 seconds of the Gemini session
+  carry the wrong label. Tuning the timeout trades false-resets (too short) against
+  stale type (too long).
+
+**Option E — Debounced idle reset with output-based cancellation (recommended)**
+Combine the core ideas of A and D with hysteresis:
+
+1. When a shell-prompt pattern fires, start a short "pending reset" timer (3 seconds).
+2. If any AI-specific output appears during those 3 seconds, cancel the timer — the
+   AI is still active; the prompt match was a false trigger.
+3. If the timer fires without cancellation, reset: `claudeActive = false`,
+   `aiType = null`, `state = "idle"`.
+4. For Claude Code specifically, also wire `SessionEnd` hook events to fire the
+   reset immediately (no timer), since that signal is authoritative.
+
+This handles the key cases:
+- *False prompt in AI output* — cancelled by the next AI output chunk within 3s.
+- *Clean exit → pause → different CLI* — the 3s window elapses, type resets, new
+  CLI's startup output sets the correct type.
+- *Clean exit → immediate re-launch* — the new CLI's startup output arrives within
+  3s in the common case, cancelling the pending reset. If startup takes longer than
+  3s (unlikely), the reset fires and the new detection picks up the correct type
+  once startup output appears. A brief "idle" interlude is the worst case.
+- *Claude Code exit via hooks* — `SessionEnd` fires the reset immediately with no
+  timer, giving precise behaviour for the well-instrumented case.
+
+**Implementation Sketch:**
+```
+// Per-tab state additions:
+resetPendingTimer: null
+
+// In shell prompt detection:
+if (!tab.resetPendingTimer) {
+  tab.resetPendingTimer = setTimeout(() => {
+    tab.resetPendingTimer = null;
+    tab.claudeActive = false;
+    tab.aiType = null;
+    tab.state = "idle";
+    tab.description = "";
+    tab.recentFiles = [];
+    this.broadcast();
+  }, 3000);
+}
+
+// In AI activation detection (when !tab.claudeActive becomes true):
+// (no change needed — the latch re-sets correctly after a reset)
+
+// In AI output detection (when claudeActive is already true):
+if (tab.resetPendingTimer) {
+  clearTimeout(tab.resetPendingTimer);
+  tab.resetPendingTimer = null;
+}
+
+// In HookReceiver SessionEnd handler:
+tab.claudeActive = false;
+tab.aiType = null;
+// (immediate, no timer)
+```
+
+The timer also needs clearing in `removeTab()` to avoid firing after a tab is closed.
+
+**Trade-offs:**
+The 3-second window is tunable but arbitrary. The hysteresis approach is still
+heuristic-based — consistent with the existing detector's design philosophy
+("heuristic, not authoritative; acceptable because it's UX sugar, not a security
+control"). Option B would be more accurate but the complexity and platform fragmentation
+make it disproportionate to the problem.
+
+**Files that need to change:**
+- `src/main.js` — `ClaudeStatusDetector` (timer logic, state reset)
+- `src/enhanced-status-detector.js` — propagate reset to the enhanced detector's
+  per-tab state so hooks-sourced status also resets
+- `src/hook-receiver.js` — emit reset event on `SessionEnd`
+
+---
+
 ## 2026-03-28: claudeStatus.removeTab in pty-kill Handler
 
 **Decision:** Add `claudeStatus.removeTab(tabId)` to the `pty-kill` IPC handler.

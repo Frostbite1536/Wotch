@@ -187,8 +187,9 @@ class ClaudeIntegrationManager extends EventEmitter {
       return;
     }
 
-    // Clean up session mapping on SessionEnd
+    // Clean up session mapping on SessionEnd and notify listeners
     if (event.eventType === "SessionEnd") {
+      this.emit("session-end", tabId);
       this.sessionTabMap.delete(event.session_id);
     }
 

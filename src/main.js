@@ -1378,7 +1378,7 @@ async function createSshSession(tabId, profileId, password, reconnectAttempts = 
 //
 class ClaudeStatusDetector {
   constructor() {
-    this.tabs = new Map(); // tabId → { state, description, buffer, lastActivity, claudeActive }
+    this.tabs = new Map(); // tabId → { state, description, buffer, lastActivity, claudeActive, aiType }
     this.previousStates = new Map(); // tabId → previous state
     this.broadcastTimer = null;
   }
@@ -1389,13 +1389,19 @@ class ClaudeStatusDetector {
       description: "",
       buffer: "",         // rolling buffer of recent clean text
       lastActivity: 0,
-      claudeActive: false,
+      claudeActive: false,  // true when any supported AI CLI is active
+      aiType: null,         // "claude" | "gemini" | null
+      resetPendingTimer: null, // debounce timer for resetting claudeActive/aiType
       recentFiles: [],
       recentTools: [],
     });
   }
 
   removeTab(tabId) {
+    const tab = this.tabs.get(tabId);
+    if (tab && tab.resetPendingTimer) {
+      clearTimeout(tab.resetPendingTimer);
+    }
     this.tabs.delete(tabId);
   }
 
@@ -1421,8 +1427,7 @@ class ClaudeStatusDetector {
       tab.buffer = tab.buffer.slice(-2000);
     }
 
-    // ── Detect if Claude Code session is active ──
-    // Claude Code shows distinctive patterns when launched
+    // ── Detect if a supported AI CLI session is active ──
     if (!tab.claudeActive) {
       if (
         /claude\s/i.test(clean) ||
@@ -1431,6 +1436,24 @@ class ClaudeStatusDetector {
         /claude\.ai/i.test(clean)
       ) {
         tab.claudeActive = true;
+        tab.aiType = "claude";
+      } else if (
+        /Gemini CLI/i.test(clean) ||
+        /gemini\.google\.com/i.test(clean)
+      ) {
+        tab.claudeActive = true;
+        tab.aiType = "gemini";
+      }
+      // New AI detection cancels any pending reset from the previous session
+      if (tab.claudeActive && tab.resetPendingTimer) {
+        clearTimeout(tab.resetPendingTimer);
+        tab.resetPendingTimer = null;
+      }
+    } else {
+      // AI is already active — cancel any pending reset (output proves session is still alive)
+      if (tab.resetPendingTimer) {
+        clearTimeout(tab.resetPendingTimer);
+        tab.resetPendingTimer = null;
       }
     }
 
@@ -1490,7 +1513,7 @@ class ClaudeStatusDetector {
         /\[Y\/n\]/i,
         /approve|accept|reject|deny/i,
       ],
-      // Done / Success
+      // Done / Success (Claude Code + Gemini CLI)
       done: [
         /[✓✔]\s*(.{0,60})/u,
         /(?:Done|Complete|Finished|Success|Applied)\b/i,
@@ -1498,6 +1521,9 @@ class ClaudeStatusDetector {
         /wrote \d+ file/i,
         /updated \d+ file/i,
       ],
+      // Gemini CLI diamond — only treated as "done" after idle/prompt,
+      // NOT mid-session where ◆ marks each individual tool-call completion
+      geminiDone: /^◆\s+(.{0,60})/um,
       // Error
       error: [
         /[✗✘×]\s*(.{0,60})/u,
@@ -1534,6 +1560,16 @@ class ClaudeStatusDetector {
           tab.state = "done";
           tab.description = this.extractDescription(m, clean, "Done");
           break;
+        }
+      }
+      // Gemini ◆ diamond: only treat as "done" when preceded by idle/prompt state,
+      // not mid-session where ◆ fires on every individual tool-call completion
+      if (tab.state !== "done" && tab.aiType === "gemini" &&
+          (prevState === "idle" || prevState === "done" || prevState === "waiting")) {
+        const m = clean.match(patterns.geminiDone);
+        if (m) {
+          tab.state = "done";
+          tab.description = this.extractDescription(m, clean, "Done");
         }
       }
     }
@@ -1611,6 +1647,20 @@ class ClaudeStatusDetector {
         if (re.test(clean)) {
           tab.state = "idle";
           tab.description = tab.claudeActive ? "Ready" : "";
+          // Start debounced reset: if no AI output arrives within 3s,
+          // reset claudeActive/aiType so a different CLI can be detected
+          if (tab.claudeActive && !tab.resetPendingTimer) {
+            tab.resetPendingTimer = setTimeout(() => {
+              tab.resetPendingTimer = null;
+              tab.claudeActive = false;
+              tab.aiType = null;
+              tab.state = "idle";
+              tab.description = "";
+              tab.recentFiles = [];
+              tab.recentTools = [];
+              this.broadcast();
+            }, 3000);
+          }
           break;
         }
       }
@@ -1657,10 +1707,27 @@ class ClaudeStatusDetector {
     return best;
   }
 
+  // Immediately reset AI detection for a tab (called on authoritative SessionEnd)
+  resetAiSession(tabId) {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    if (tab.resetPendingTimer) {
+      clearTimeout(tab.resetPendingTimer);
+      tab.resetPendingTimer = null;
+    }
+    tab.claudeActive = false;
+    tab.aiType = null;
+    tab.state = "idle";
+    tab.description = "";
+    tab.recentFiles = [];
+    tab.recentTools = [];
+    this.broadcast();
+  }
+
   getTabStatus(tabId) {
     const tab = this.tabs.get(tabId);
-    if (!tab) return { state: "idle", description: "" };
-    return { state: tab.state, description: tab.description };
+    if (!tab) return { state: "idle", description: "", aiType: null };
+    return { state: tab.state, description: tab.description, aiType: tab.aiType };
   }
 
   broadcast() {
@@ -1676,11 +1743,12 @@ class ClaudeStatusDetector {
             (tab.state === "done" || tab.state === "error")) {
           if (mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
             try {
+              const aiLabel = tab.aiType === "gemini" ? "Gemini" : "Claude";
               const notif = new Notification({
                 title: "Wotch",
                 body: tab.state === "error"
-                  ? `Claude error: ${tab.description || "Unknown"}`
-                  : `Claude finished: ${tab.description || "Task complete"}`,
+                  ? `${aiLabel} error: ${tab.description || "Unknown"}`
+                  : `${aiLabel} finished: ${tab.description || "Task complete"}`,
                 silent: false,
               });
               notif.show();
@@ -1694,7 +1762,7 @@ class ClaudeStatusDetector {
         const aggregate = this.getAggregateStatus();
         const perTab = {};
         for (const [tabId, tab] of this.tabs) {
-          perTab[tabId] = { state: tab.state, description: tab.description };
+          perTab[tabId] = { state: tab.state, description: tab.description, aiType: tab.aiType };
         }
         mainWindow.webContents.send("claude-status", { aggregate, perTab });
       }
@@ -3858,6 +3926,11 @@ integrationManager.on("notification", (event) => {
       notif.show();
     } catch { /* notifications may not be available */ }
   }
+});
+
+// Immediate AI session reset on authoritative SessionEnd from hooks
+integrationManager.on("session-end", (tabId) => {
+  claudeStatus.resetAiSession(tabId);
 });
 
 // ── API Server ────────────────────────────────────────────────────
