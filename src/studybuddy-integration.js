@@ -27,7 +27,11 @@ function readConfigFile(name) {
   const file = path.join(studyBuddyConfigDir(), name);
   try {
     const raw = fs.readFileSync(file, "utf-8").trim();
-    return raw.length > 0 ? raw : null;
+    if (raw.length === 0) return null;
+    // Reject embedded control chars — stops a malformed token file from
+    // turning into an HTTP header-injection surface on the Authorization line.
+    if (/[\r\n\0]/.test(raw)) return null;
+    return raw;
   } catch {
     return null;
   }
@@ -106,12 +110,16 @@ async function ask({ question, context, timeoutMs } = {}) {
         }
       });
     });
+    let timedOut = false;
     req.on("timeout", () => {
-      req.destroy(new Error("timeout"));
+      timedOut = true;
+      const err = new Error("timeout");
+      err.code = "ETIMEDOUT";
+      req.destroy(err);
     });
     req.on("error", (e) => {
       const err = new Error(e.message || "request failed");
-      err.code = e.code === "ECONNREFUSED" ? "ECONNREFUSED" : (e.code || "ENET");
+      err.code = timedOut ? "ETIMEDOUT" : (e.code || "ENET");
       reject(err);
     });
     req.write(body);

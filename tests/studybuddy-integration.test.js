@@ -246,7 +246,7 @@ describe("studybuddy-integration", () => {
       clearConfig();
     });
 
-    test("maps hung request to a timeout-shaped error", async () => {
+    test("maps hung request to ETIMEDOUT", async () => {
       if (process.platform === "darwin") return;
       // Server accepts the connection but never responds — ask() should time out.
       const { server, port } = await listenOnPort(() => { /* intentionally hang */ });
@@ -254,12 +254,25 @@ describe("studybuddy-integration", () => {
         writeConfig("tkn", port);
         await assert.rejects(
           () => sb.ask({ question: "hi", timeoutMs: 150 }),
-          (err) => err.code === "ENET" || /timeout/i.test(err.message),
+          (err) => err.code === "ETIMEDOUT",
         );
       } finally {
         clearConfig();
         await closeServer(server);
       }
+    });
+
+    test("rejects a token file containing CRLF as not-installed", async () => {
+      if (process.platform === "darwin") return;
+      // A malicious token file with embedded \r\n would otherwise smuggle into
+      // the Authorization header. readConfigFile must treat it as absent.
+      fs.writeFileSync(path.join(CONFIG_DIR, "extension-token"), "good\r\nX-Injected: evil");
+      fs.writeFileSync(path.join(CONFIG_DIR, "extension-port"), "19521");
+      await assert.rejects(
+        () => sb.ask({ question: "hi" }),
+        (err) => err.code === "ENOCONFIG",
+      );
+      clearConfig();
     });
   });
 });

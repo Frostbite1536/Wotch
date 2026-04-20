@@ -2355,7 +2355,11 @@ function enterAskMode() {
 
 async function submitAskStudybuddy() {
   const question = paletteInput.value.trim();
-  if (!question) return;
+  if (!question) {
+    showToast("Question is empty — nothing sent", "info");
+    closePalette();
+    return;
+  }
   closePalette();
   const context = captureActiveTabBuffer(4096);
   showToast("Sending to StudyBuddy…", "info");
@@ -2371,12 +2375,18 @@ async function submitAskStudybuddy() {
         showToast("StudyBuddy rejected the token — restart StudyBuddy", "error");
       } else if (code === "EDISABLED") {
         showToast("StudyBuddy integration is disabled in Settings", "error");
+      } else if (code === "EUNAVAILABLE") {
+        showToast("StudyBuddy integration module failed to load", "error");
+      } else if (code === "ETIMEDOUT") {
+        showToast("StudyBuddy timed out — try again", "error");
       } else {
-        showToast(`StudyBuddy: ${(res && res.message) || "request failed"}`, "error");
+        const msg = (res && res.message) ? String(res.message) : "request failed";
+        showToast(`StudyBuddy: ${msg}`, "error");
       }
     }
   } catch (err) {
-    showToast(`StudyBuddy: ${err.message || err}`, "error");
+    const msg = err && err.message ? String(err.message) : String(err);
+    showToast(`StudyBuddy: ${msg}`, "error");
   }
 }
 
