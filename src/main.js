@@ -12,6 +12,8 @@ let ClaudeIntegrationManager;
 try { ({ ClaudeIntegrationManager } = require("./claude-integration-manager")); } catch { ClaudeIntegrationManager = null; console.warn("[wotch] claude-integration-manager not found — integration features disabled"); }
 let ApiServer;
 try { ({ ApiServer } = require("./api-server")); } catch { ApiServer = null; console.warn("[wotch] api-server not found — API features disabled"); }
+let studyBuddy;
+try { studyBuddy = require("./studybuddy-integration"); } catch { studyBuddy = null; console.warn("[wotch] studybuddy-integration not found — Ask StudyBuddy disabled"); }
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -96,6 +98,8 @@ const DEFAULT_SETTINGS = {
   // Local API
   apiEnabled: false,
   apiPort: 19519,
+  // StudyBuddy integration
+  studybuddyIntegrationEnabled: true,
   // Claude API chat
   apiBudgetMonthly: 0,       // 0 = unlimited
   chatDefaultModel: "claude-sonnet-4-6-20250514",
@@ -4610,6 +4614,7 @@ const ALLOWED_SETTING_KEYS = [
   "integrationBridgeEnabled", "integrationBridgePort",
   "apiEnabled", "apiPort",
   "apiBudgetMonthly", "chatDefaultModel", "lastTabCwds",
+  "studybuddyIntegrationEnabled",
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -4672,6 +4677,26 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
   }
 
   return ok;
+});
+
+// ── StudyBuddy integration ───────────────────────────────────────
+ipcMain.handle("studybuddy-status", () => ({
+  available: !!studyBuddy,
+  installed: studyBuddy ? studyBuddy.isInstalled() : false,
+  enabled: settings.studybuddyIntegrationEnabled !== false,
+}));
+
+ipcMain.handle("studybuddy-ask", async (_event, { question, context } = {}) => {
+  if (!studyBuddy) return { ok: false, code: "EUNAVAILABLE", message: "integration module not loaded" };
+  if (settings.studybuddyIntegrationEnabled === false) {
+    return { ok: false, code: "EDISABLED", message: "StudyBuddy integration disabled in settings" };
+  }
+  try {
+    await studyBuddy.ask({ question, context });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, code: err.code || "EERR", message: err.message || String(err) };
+  }
 });
 
 ipcMain.handle("reset-settings", () => {
