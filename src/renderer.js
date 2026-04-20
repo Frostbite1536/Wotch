@@ -1339,6 +1339,10 @@ async function refreshStudybuddyStatus() {
 if (setStudybuddyEnabled) {
   setStudybuddyEnabled.addEventListener("click", () => {
     setStudybuddyEnabled.classList.toggle("on");
+    // Update the palette's view of the setting immediately so the next
+    // palette open reflects the toggle without waiting for the debounced
+    // save + IPC round-trip.
+    studybuddyAvailable.enabled = setStudybuddyEnabled.classList.contains("on");
     debouncedSave();
     setTimeout(refreshStudybuddyStatus, 600);
   });
@@ -2305,6 +2309,9 @@ async function refreshStudybuddyAvailability() {
   try {
     if (window.wotch.studybuddyStatus) {
       studybuddyAvailable = await window.wotch.studybuddyStatus();
+      // If the palette is already open in command mode, re-render so a
+      // resolved status is reflected without waiting for the next keystroke.
+      if (paletteOpen && paletteMode === "command") renderPalette();
     }
   } catch { /* ignore */ }
 }

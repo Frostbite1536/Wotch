@@ -46,10 +46,23 @@ function readTokenAndPort() {
   return { token, port };
 }
 
+// Tail the last `maxBytes` of a UTF-8 string without splitting a multi-byte
+// codepoint (continuation bytes are `10xxxxxx`, i.e. `(b & 0xC0) === 0x80`).
+function tailUtf8Bytes(s, maxBytes) {
+  const buf = Buffer.from(s, "utf-8");
+  if (buf.length <= maxBytes) return s;
+  let start = buf.length - maxBytes;
+  while (start < buf.length && (buf[start] & 0xC0) === 0x80) start++;
+  return buf.slice(start).toString("utf-8");
+}
+
 async function ask({ question, context, timeoutMs } = {}) {
   const q = typeof question === "string" ? question.trim() : "";
   if (!q) throw new Error("question is empty");
-  if (q.length > 4096) throw new Error("question exceeds 4 KB cap");
+  // StudyBuddy /ask caps question at 4 KB bytes (MAX_ASK_QUESTION_BYTES).
+  // Match the byte-based contract — multi-byte codepoints would otherwise
+  // let 4 096 JS chars serialize past the server cap.
+  if (Buffer.byteLength(q, "utf-8") > 4096) throw new Error("question exceeds 4 KB cap");
 
   const creds = readTokenAndPort();
   if (!creds) {
@@ -60,7 +73,7 @@ async function ask({ question, context, timeoutMs } = {}) {
 
   const payload = { question: q, source: "wotch" };
   if (typeof context === "string" && context.length > 0) {
-    payload.context = context.length > 4096 ? context.slice(-4096) : context;
+    payload.context = tailUtf8Bytes(context, 4096);
   }
   const body = Buffer.from(JSON.stringify(payload), "utf-8");
 

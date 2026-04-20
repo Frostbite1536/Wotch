@@ -6,7 +6,7 @@
 // Tests redirect that dir by setting XDG_CONFIG_HOME (Linux/test fallback)
 // and APPDATA (Windows) before requiring the module.
 
-const { test, describe, before, after } = require("node:test");
+const { test, describe, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("node:fs");
@@ -31,6 +31,11 @@ function sandboxedConfigDir() {
 
 const CONFIG_DIR = sandboxedConfigDir();
 fs.mkdirSync(CONFIG_DIR, { recursive: true });
+
+// Tear down the per-run temp dir so CI runners don't accumulate leftovers.
+after(() => {
+  try { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 function writeConfig(token, port) {
   fs.writeFileSync(path.join(CONFIG_DIR, "extension-token"), token);
@@ -97,6 +102,23 @@ describe("studybuddy-integration", () => {
       await assert.rejects(() => sb.ask({ question: big }), /exceeds 4 KB cap/);
     });
 
+    test("question cap measures UTF-8 bytes, not characters", async () => {
+      // "🔥" is 4 UTF-8 bytes. 1025 copies = 4 100 bytes (over cap) but only
+      // 2 050 JS chars (under a char-based cap). Must be rejected.
+      const emojiBig = "🔥".repeat(1025);
+      await assert.rejects(() => sb.ask({ question: emojiBig }), /exceeds 4 KB cap/);
+      // 1024 copies = 4 096 bytes, right at the limit — must be accepted
+      // byte-wise (rejected only if it reaches the HTTP layer with no server).
+      // ENOCONFIG confirms we passed the byte check.
+      if (process.platform !== "darwin") {
+        clearConfig();
+        await assert.rejects(
+          () => sb.ask({ question: "🔥".repeat(1024) }),
+          (err) => err.code === "ENOCONFIG",
+        );
+      }
+    });
+
     test("throws ENOCONFIG when StudyBuddy is not installed", async () => {
       if (process.platform === "darwin") return;
       clearConfig();
@@ -159,9 +181,37 @@ describe("studybuddy-integration", () => {
         const big = "A".repeat(3000) + "B".repeat(5000);
         await sb.ask({ question: "q", context: big });
         const parsed = JSON.parse(seenBody);
-        assert.equal(parsed.context.length, 4096);
+        assert.equal(Buffer.byteLength(parsed.context, "utf-8"), 4096);
         // Tail preserved → must end with Bs.
         assert.equal(parsed.context.at(-1), "B");
+      } finally {
+        clearConfig();
+        await closeServer(server);
+      }
+    });
+
+    test("context tail does not split a multi-byte UTF-8 codepoint", async () => {
+      if (process.platform === "darwin") return;
+      let seenBody = null;
+      const { server, port } = await listenOnPort((req, res) => {
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          seenBody = Buffer.concat(chunks).toString("utf-8");
+          res.writeHead(200); res.end("{}");
+        });
+      });
+      try {
+        writeConfig("tkn", port);
+        // All-emoji context → every char is 4 bytes. 1200 emoji = 4 800 bytes.
+        // Naive buf.slice(-4096) would cut mid-codepoint and yield U+FFFD
+        // replacement chars. The byte-safe tail must not.
+        const emoji = "🔥".repeat(1200);
+        await sb.ask({ question: "q", context: emoji });
+        const parsed = JSON.parse(seenBody);
+        assert.ok(Buffer.byteLength(parsed.context, "utf-8") <= 4096);
+        // Every returned char must be an intact "🔥".
+        assert.ok(/^(🔥)+$/u.test(parsed.context));
       } finally {
         clearConfig();
         await closeServer(server);
