@@ -1,6 +1,6 @@
 {
   "name": "wotch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Wotch — the notch, for those without. A floating terminal for Claude Code (Windows, Linux, macOS)",
   "author": "Frostbite1536 <frostbite1536@users.noreply.github.com>",
   "main": "src/main.js",
@@ -11,7 +11,8 @@
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "dist:mac": "electron-builder --mac",
-    "postinstall": "electron-rebuild"
+    "postinstall": "electron-rebuild",
+    "test": "node --test tests/*.test.js"
   },
   "build": {
     "appId": "com.wotch.app",

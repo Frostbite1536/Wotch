@@ -1073,6 +1073,8 @@ const bridgeStatusInfo = document.getElementById("bridge-status-info");
 const btnRestartBridge = document.getElementById("btn-restart-bridge");
 // API settings elements
 const setApiEnabled = document.getElementById("set-api-enabled");
+const setStudybuddyEnabled = document.getElementById("set-studybuddy-enabled");
+const studybuddyStatusInfo = document.getElementById("studybuddy-status-info");
 const setApiPort = document.getElementById("set-api-port");
 const apiDot = document.getElementById("api-dot");
 const apiTokenDisplay = document.getElementById("api-token-display");
@@ -1181,6 +1183,9 @@ async function loadSettingsUI() {
     // API settings
     if (setApiEnabled) setApiEnabled.classList.toggle("on", s.apiEnabled || false);
     if (setApiPort) setApiPort.value = s.apiPort || 19519;
+    // StudyBuddy integration
+    if (setStudybuddyEnabled) setStudybuddyEnabled.classList.toggle("on", s.studybuddyIntegrationEnabled !== false);
+    refreshStudybuddyStatus();
     // Claude API settings
     if (setChatDefaultModel) setChatDefaultModel.value = s.chatDefaultModel || "claude-sonnet-4-6-20250514";
     if (setMonthlyBudget) setMonthlyBudget.value = s.apiBudgetMonthly || "";
@@ -1217,6 +1222,7 @@ function debouncedSave() {
       apiEnabled: setApiEnabled ? setApiEnabled.classList.contains("on") : false,
       apiPort: setApiPort ? parseInt(setApiPort.value) || 19519 : 19519,
       chatDefaultModel: setChatDefaultModel ? setChatDefaultModel.value : "claude-sonnet-4-6-20250514",
+      studybuddyIntegrationEnabled: setStudybuddyEnabled ? setStudybuddyEnabled.classList.contains("on") : true,
     };
     await window.wotch.saveSettings(newSettings);
   }, 500);
@@ -1311,6 +1317,34 @@ if (btnRestartBridge) {
     } catch { btnRestartBridge.textContent = "Failed"; }
     setTimeout(() => { btnRestartBridge.textContent = "Restart Bridge"; }, 2000);
     refreshIntegrationStatus();
+  });
+}
+
+// ── StudyBuddy Settings Wiring ──
+async function refreshStudybuddyStatus() {
+  if (!studybuddyStatusInfo || !window.wotch.studybuddyStatus) return;
+  try {
+    const s = await window.wotch.studybuddyStatus();
+    if (!s.available) {
+      studybuddyStatusInfo.textContent = "Integration module not loaded.";
+    } else if (!s.installed) {
+      studybuddyStatusInfo.textContent = "StudyBuddy config not found — install StudyBuddy and run it once.";
+    } else if (!s.enabled) {
+      studybuddyStatusInfo.textContent = "Disabled.";
+    } else {
+      studybuddyStatusInfo.textContent = "Ready — press Ctrl+Shift+P → Ask StudyBuddy.";
+    }
+  } catch { /* ignore */ }
+}
+if (setStudybuddyEnabled) {
+  setStudybuddyEnabled.addEventListener("click", () => {
+    setStudybuddyEnabled.classList.toggle("on");
+    // Update the palette's view of the setting immediately so the next
+    // palette open reflects the toggle without waiting for the debounced
+    // save + IPC round-trip.
+    studybuddyAvailable.enabled = setStudybuddyEnabled.classList.contains("on");
+    debouncedSave();
+    setTimeout(refreshStudybuddyStatus, 600);
   });
 }
 
@@ -2268,6 +2302,93 @@ const paletteInput = document.getElementById("palette-input");
 const paletteList = document.getElementById("palette-list");
 let paletteOpen = false;
 let paletteIndex = 0;
+let paletteMode = "command"; // "command" | "ask"
+let studybuddyAvailable = { available: false, installed: false, enabled: false };
+
+async function refreshStudybuddyAvailability() {
+  try {
+    if (window.wotch.studybuddyStatus) {
+      studybuddyAvailable = await window.wotch.studybuddyStatus();
+      // If the palette is already open in command mode, re-render so a
+      // resolved status is reflected without waiting for the next keystroke.
+      if (paletteOpen && paletteMode === "command") renderPalette();
+    }
+  } catch { /* ignore */ }
+}
+refreshStudybuddyAvailability();
+
+// Walk the last N chars out of the active xterm buffer for /ask context.
+function captureActiveTabBuffer(maxChars = 4096) {
+  try {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) return null;
+    const pane = paneMap.get(tab.activePaneId);
+    if (!pane || !pane.term) return null;
+    const buf = pane.term.buffer.active;
+    const lines = [];
+    let total = 0;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (!text) continue;
+      lines.push(text);
+      total += text.length + 1;
+      if (total >= maxChars) break;
+    }
+    const joined = lines.reverse().join("\n");
+    return joined.length > maxChars ? joined.slice(-maxChars) : joined;
+  } catch {
+    return null;
+  }
+}
+
+function enterAskMode() {
+  paletteMode = "ask";
+  paletteInput.value = "";
+  paletteInput.placeholder = "Ask StudyBuddy… (Enter to send, Esc to cancel)";
+  paletteList.innerHTML = `<div style="padding:10px 14px;font-size:11px;color:var(--text-muted);">
+    Your question is sent to StudyBuddy along with the last 4 KB of this terminal's output as context.
+  </div>`;
+  paletteInput.focus();
+}
+
+async function submitAskStudybuddy() {
+  const question = paletteInput.value.trim();
+  if (!question) {
+    showToast("Question is empty — nothing sent", "info");
+    closePalette();
+    return;
+  }
+  closePalette();
+  const context = captureActiveTabBuffer(4096);
+  showToast("Sending to StudyBuddy…", "info");
+  try {
+    const res = await window.wotch.studybuddyAsk(question, context);
+    if (res && res.ok) {
+      showToast("Sent to StudyBuddy", "success");
+    } else {
+      const code = res && res.code;
+      if (code === "ENOCONFIG" || code === "ECONNREFUSED") {
+        showToast("StudyBuddy not running — launch it from its tray icon", "error");
+      } else if (code === "EAUTH") {
+        showToast("StudyBuddy rejected the token — restart StudyBuddy", "error");
+      } else if (code === "EDISABLED") {
+        showToast("StudyBuddy integration is disabled in Settings", "error");
+      } else if (code === "EUNAVAILABLE") {
+        showToast("StudyBuddy integration module failed to load", "error");
+      } else if (code === "ETIMEDOUT") {
+        showToast("StudyBuddy timed out — try again", "error");
+      } else {
+        const msg = (res && res.message) ? String(res.message) : "request failed";
+        showToast(`StudyBuddy: ${msg}`, "error");
+      }
+    }
+  } catch (err) {
+    const msg = err && err.message ? String(err.message) : String(err);
+    showToast(`StudyBuddy: ${msg}`, "error");
+  }
+}
 
 const COMMANDS = [
   { name: "New Tab", shortcut: "Ctrl+T", action: () => createTab() },
@@ -2306,19 +2427,31 @@ const COMMANDS = [
     if (chatCost) chatCost.textContent = "$0.00";
     if (chatTokens) chatTokens.textContent = "";
   }},
+  {
+    name: "Ask StudyBuddy: …",
+    shortcut: "",
+    studybuddy: true, // filtered out by getFilteredCommandsWithPlugins when unavailable
+    action: () => enterAskMode(),
+  },
 ];
 
 function openPalette() {
   paletteOpen = true;
+  paletteMode = "command";
   paletteIndex = 0;
   paletteInput.value = "";
+  paletteInput.placeholder = "Type a command...";
   paletteOverlay.classList.add("open");
   paletteInput.focus();
   renderPalette();
+  // Refresh availability in the background; affects filter on next keystroke.
+  refreshStudybuddyAvailability();
 }
 
 function closePalette() {
   paletteOpen = false;
+  paletteMode = "command";
+  paletteInput.placeholder = "Type a command...";
   paletteOverlay.classList.remove("open");
   const active = tabs.find((t) => t.id === activeTabId);
   if (active) { const p = paneMap.get(active.activePaneId); if (p) p.term.focus(); }
@@ -2339,20 +2472,37 @@ function renderPalette() {
   ).join("");
 }
 
-paletteInput.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
+paletteInput.addEventListener("input", () => {
+  if (paletteMode === "ask") return; // free-form question, no filtering
+  paletteIndex = 0;
+  renderPalette();
+});
 paletteInput.addEventListener("keydown", (e) => {
+  if (paletteMode === "ask") {
+    if (e.key === "Enter") { e.preventDefault(); submitAskStudybuddy(); return; }
+    if (e.key === "Escape") { e.preventDefault(); closePalette(); return; }
+    return;
+  }
   const filtered = getFilteredCommands();
   if (e.key === "ArrowDown") { paletteIndex = Math.min(paletteIndex + 1, filtered.length - 1); renderPalette(); e.preventDefault(); }
   if (e.key === "ArrowUp") { paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(); e.preventDefault(); }
-  if (e.key === "Enter" && filtered[paletteIndex]) { closePalette(); filtered[paletteIndex].action(); e.preventDefault(); }
+  if (e.key === "Enter" && filtered[paletteIndex]) {
+    const cmd = filtered[paletteIndex];
+    // "Ask StudyBuddy" transitions the palette into ask mode instead of closing it.
+    if (cmd.studybuddy) { e.preventDefault(); cmd.action(); return; }
+    closePalette(); cmd.action(); e.preventDefault();
+  }
   if (e.key === "Escape") { closePalette(); e.preventDefault(); }
 });
 paletteList.addEventListener("click", (e) => {
+  if (paletteMode === "ask") return;
   const item = e.target.closest(".palette-item");
   if (item) {
     const filtered = getFilteredCommands();
     const cmd = filtered[parseInt(item.dataset.idx)];
-    if (cmd) { closePalette(); cmd.action(); }
+    if (!cmd) return;
+    if (cmd.studybuddy) { cmd.action(); return; }
+    closePalette(); cmd.action();
   }
 });
 
@@ -2416,8 +2566,11 @@ async function renderPluginList() {
 
 function getFilteredCommandsWithPlugins() {
   const q = paletteInput.value.toLowerCase();
+  const sbOn = studybuddyAvailable && studybuddyAvailable.available
+    && studybuddyAvailable.installed && studybuddyAvailable.enabled;
+  const base = sbOn ? COMMANDS : COMMANDS.filter((c) => !c.studybuddy);
   const all = [
-    ...COMMANDS,
+    ...base,
     ...pluginCommands.map(pc => ({
       name: pc.title,
       shortcut: "",

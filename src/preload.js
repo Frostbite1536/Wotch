@@ -108,6 +108,11 @@ contextBridge.exposeInMainWorld("wotch", {
   configureHooks: () => ipcRenderer.invoke("integration-configure-hooks"),
   registerMCP: () => ipcRenderer.invoke("integration-register-mcp"),
 
+  // ── StudyBuddy integration ─────────────────────────────────────
+  studybuddyStatus: () => ipcRenderer.invoke("studybuddy-status"),
+  studybuddyAsk: (question, context) =>
+    ipcRenderer.invoke("studybuddy-ask", { question, context }),
+
   // ── Local API ──────────────────────────────────────────────────
   apiGetInfo: () => ipcRenderer.invoke("api-get-info"),
   apiCopyToken: () => ipcRenderer.invoke("api-copy-token"),
