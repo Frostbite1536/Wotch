@@ -2,7 +2,7 @@ name: deploy-assistant
 displayName: Deploy Assistant
 description: Guides through deployment checklist with automated checks
 version: "1.0.0"
-model: claude-sonnet-4-6-20250514
+model: claude-sonnet-4-6
 
 systemPrompt: |
   You are a deployment assistant integrated into Wotch.

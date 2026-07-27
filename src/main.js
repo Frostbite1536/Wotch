@@ -14,6 +14,7 @@ let ApiServer;
 try { ({ ApiServer } = require("./api-server")); } catch { ApiServer = null; console.warn("[wotch] api-server not found — API features disabled"); }
 let studyBuddy;
 try { studyBuddy = require("./studybuddy-integration"); } catch { studyBuddy = null; console.warn("[wotch] studybuddy-integration not found — Ask StudyBuddy disabled"); }
+const launchProfiles = require("./launch-profiles");
 
 // ── Platform detection ──────────────────────────────────────────────
 const IS_WIN = os.platform() === "win32";
@@ -81,7 +82,11 @@ const DEFAULT_SETTINGS = {
   pinned: false,             // remember pin state across restarts
   theme: "dark",
   autoLaunchClaude: false,
-  launchCommand: "claude",       // command to run on new tab (e.g. "claude", "openclaude")
+  launchCommand: "claude",       // legacy scalar; migrated into launchProfiles on load
+  // Per-tab AI CLI profiles. Env values hold $VAR references, never secrets
+  // (INV-SEC-020). Populated by migrateLaunchProfiles() on first load.
+  launchProfiles: [],
+  defaultLaunchProfileId: "",
   displayIndex: 0,           // 0 = primary display
   position: "top",           // "top", "left", or "right"
   sshProfiles: [],           // saved SSH connection profiles
@@ -102,7 +107,7 @@ const DEFAULT_SETTINGS = {
   studybuddyIntegrationEnabled: true,
   // Claude API chat
   apiBudgetMonthly: 0,       // 0 = unlimited
-  chatDefaultModel: "claude-sonnet-4-6-20250514",
+  chatDefaultModel: "claude-sonnet-4-6",
   plugins: {},
   agentSettings: {
     enabled: true,
@@ -115,15 +120,27 @@ const DEFAULT_SETTINGS = {
 };
 
 function loadSettings() {
+  let loaded;
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-      return { ...DEFAULT_SETTINGS, ...raw };
+      loaded = { ...DEFAULT_SETTINGS, ...raw };
     }
   } catch (err) {
     console.log("[wotch] Failed to load settings, using defaults:", err.message);
   }
-  return { ...DEFAULT_SETTINGS };
+  if (!loaded) loaded = { ...DEFAULT_SETTINGS };
+
+  // Repair a saved chat model that carries a date suffix. Current aliases take
+  // none (claude-sonnet-4-6, not claude-sonnet-4-6-20250514) and the API
+  // rejects the suffixed form, so an old settings file would 404 on every send.
+  if (typeof loaded.chatDefaultModel === "string" && /^claude-.+-\d{8}$/.test(loaded.chatDefaultModel)) {
+    loaded.chatDefaultModel = loaded.chatDefaultModel.replace(/-\d{8}$/, "");
+  }
+
+  // Normalize/migrate profiles here so every caller (renderer, API, reset)
+  // sees a non-empty, well-formed list with a resolvable default.
+  return { ...loaded, ...launchProfiles.migrateLaunchProfiles(loaded) };
 }
 
 function saveSettings(settings) {
@@ -254,7 +271,7 @@ class CredentialManager {
       const Anthropic = require("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey: key });
       await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
+        model: "claude-haiku-4-5",
         max_tokens: 1,
         messages: [{ role: "user", content: "hi" }],
       });
@@ -275,9 +292,9 @@ const credentialManager = new CredentialManager(CREDENTIALS_PATH);
 
 // ── Claude API: Token Tracker ──────────────────────────────────────
 const MODEL_PRICING = {
-  "claude-opus-4-6-20250514": { input: 15.0, output: 75.0 },
-  "claude-sonnet-4-6-20250514": { input: 3.0, output: 15.0 },
-  "claude-haiku-4-5-20251001": { input: 0.8, output: 4.0 },
+  "claude-opus-4-6": { input: 5.0, output: 25.0 },
+  "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
+  "claude-haiku-4-5": { input: 1.0, output: 5.0 },
 };
 
 class TokenTracker {
@@ -288,7 +305,7 @@ class TokenTracker {
   }
 
   calculateCost(model, inputTokens, outputTokens) {
-    const p = MODEL_PRICING[model] || MODEL_PRICING["claude-sonnet-4-6-20250514"];
+    const p = MODEL_PRICING[model] || MODEL_PRICING["claude-sonnet-4-6"];
     return (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
   }
 
@@ -385,9 +402,9 @@ function buildFileTree(dirPath, maxDepth, currentDepth = 0) {
 
 // ── Claude API: Conversation Manager ───────────────────────────────
 const AVAILABLE_MODELS = [
-  { id: "claude-sonnet-4-6-20250514", name: "Claude Sonnet 4.6", inputPrice: "$3/M", outputPrice: "$15/M" },
-  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", inputPrice: "$0.80/M", outputPrice: "$4/M" },
-  { id: "claude-opus-4-6-20250514", name: "Claude Opus 4.6", inputPrice: "$15/M", outputPrice: "$75/M" },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", inputPrice: "$3/M", outputPrice: "$15/M" },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", inputPrice: "$1/M", outputPrice: "$5/M" },
+  { id: "claude-opus-4-6", name: "Claude Opus 4.6", inputPrice: "$5/M", outputPrice: "$25/M" },
 ];
 
 function projectHash(projectPath) {
@@ -429,7 +446,7 @@ class ClaudeAPIManager {
       id,
       projectPath: projectPath || null,
       projectName: projectPath ? path.basename(projectPath) : null,
-      model: "claude-sonnet-4-6-20250514",
+      model: "claude-sonnet-4-6",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       messages: [],
@@ -441,7 +458,7 @@ class ClaudeAPIManager {
 
   async sendMessage(tabId, projectPath, userMessage, options, sendToRenderer) {
     const client = this._ensureClient();
-    const model = options.model || "claude-sonnet-4-6-20250514";
+    const model = options.model || "claude-sonnet-4-6";
 
     // Ensure active conversation
     if (!this.activeConversationId || !this.conversations.has(this.activeConversationId)) {
@@ -1094,7 +1111,7 @@ function stopMouseTracking() {
 }
 
 // ── PTY management ──────────────────────────────────────────────────
-function createPty(tabId, cwd) {
+function createPty(tabId, cwd, profileId) {
   let shell;
   if (settings.defaultShell) {
     shell = settings.defaultShell;
@@ -1107,6 +1124,15 @@ function createPty(tabId, cwd) {
   }
   const startDir = cwd || os.homedir();
 
+  // Resolve the tab's launch profile and expand its $VAR references against
+  // Wotch's own environment. Layered over process.env but *under* the vars
+  // Wotch depends on, so a profile can override PATH but not TERM or the tab
+  // id the hook receiver correlates on.
+  const profile = launchProfiles.resolveLaunchProfile(
+    settings.launchProfiles, profileId, settings.defaultLaunchProfileId,
+  );
+  const profileEnv = launchProfiles.buildProfileEnv(profile, process.env);
+
   const ptyProc = pty.spawn(shell, [], {
     name: "xterm-256color",
     cols: 80,
@@ -1114,6 +1140,7 @@ function createPty(tabId, cwd) {
     cwd: startDir,
     env: {
       ...process.env,
+      ...profileEnv,
       TERM: "xterm-256color",
       WOTCH_TAB_ID: tabId,
       // Inject OSC 7 cwd reporting for bash (zsh/fish do it automatically)
@@ -3072,7 +3099,7 @@ class AgentRuntime {
         this.onEvent({ runId: this.runId, type: "reasoning", data: { text: `Turn ${this.iteration}/${maxTurns}...` } });
 
         const response = await client.messages.create({
-          model: this.agent.model || "claude-sonnet-4-6-20250514",
+          model: this.agent.model || "claude-sonnet-4-6",
           system: systemPrompt,
           messages: this.messages,
           tools: toolDefs,
@@ -3337,7 +3364,7 @@ class AgentManager {
       const trustInfo = this.trust[id] || {};
       list.push({
         id, displayName: def.displayName || def.name, description: def.description,
-        version: def.version || "1.0.0", model: def.model || "claude-sonnet-4-6-20250514",
+        version: def.version || "1.0.0", model: def.model || "claude-sonnet-4-6",
         tools: def.tools || [], triggers: def.triggers || [{ type: "manual" }],
         approvalMode: trustInfo.mode || def.approvalMode || settings.agentSettings?.defaultApprovalMode || "ask-first",
         source: def._source, maxTurns: def.maxTurns || 10,
@@ -4520,8 +4547,8 @@ function gitDiffForApi(projectPath, mode) {
 }
 
 // ── IPC handlers ────────────────────────────────────────────────────
-ipcMain.handle("pty-create", (_event, { tabId, cwd }) => {
-  return createPty(tabId, cwd);
+ipcMain.handle("pty-create", (_event, { tabId, cwd, profileId }) => {
+  return createPty(tabId, cwd, profileId);
 });
 
 ipcMain.on("pty-write", (_event, { tabId, data }) => {
@@ -4615,6 +4642,10 @@ const ALLOWED_SETTING_KEYS = [
   "apiEnabled", "apiPort",
   "apiBudgetMonthly", "chatDefaultModel", "lastTabCwds",
   "studybuddyIntegrationEnabled",
+  "defaultLaunchProfileId",
+  // NOTE: "launchProfiles" is deliberately absent — it is modified only through
+  // the launch-profile-* IPC handlers, so a general save-settings call cannot
+  // clobber it. Same isolation rationale as sshProfiles (INV-DATA-005).
 ];
 
 ipcMain.handle("save-settings", (_event, newSettings) => {
@@ -4677,6 +4708,62 @@ ipcMain.handle("save-settings", (_event, newSettings) => {
   }
 
   return ok;
+});
+
+// ── Launch profiles ────────────────────────────────────────────────
+// Dedicated handlers, mirroring the sshProfiles isolation in INV-DATA-005:
+// the general save-settings path never touches settings.launchProfiles.
+
+ipcMain.handle("launch-profiles-list", () => ({
+  profiles: settings.launchProfiles || [],
+  defaultProfileId: settings.defaultLaunchProfileId || "",
+}));
+
+ipcMain.handle("launch-profile-save", (_event, profile) => {
+  const normalized = launchProfiles.normalizeProfile(profile);
+  if (!normalized) return { ok: false, error: "Invalid profile" };
+
+  const list = Array.isArray(settings.launchProfiles) ? [...settings.launchProfiles] : [];
+  const idx = list.findIndex((p) => p && p.id === normalized.id);
+  if (idx >= 0) {
+    list[idx] = normalized;
+  } else {
+    if (list.length >= launchProfiles.MAX_PROFILES) {
+      return { ok: false, error: `At most ${launchProfiles.MAX_PROFILES} profiles` };
+    }
+    list.push(normalized);
+  }
+
+  settings.launchProfiles = list;
+  if (!settings.defaultLaunchProfileId) settings.defaultLaunchProfileId = normalized.id;
+  saveSettings(settings);
+  return { ok: true, profile: normalized };
+});
+
+ipcMain.handle("launch-profile-delete", (_event, { profileId } = {}) => {
+  const list = Array.isArray(settings.launchProfiles) ? settings.launchProfiles : [];
+  // Keep at least one profile so new tabs always have something to resolve.
+  if (list.length <= 1) return { ok: false, error: "Cannot delete the last profile" };
+
+  const next = list.filter((p) => p && p.id !== profileId);
+  if (next.length === list.length) return { ok: false, error: "Profile not found" };
+
+  settings.launchProfiles = next;
+  if (settings.defaultLaunchProfileId === profileId) {
+    settings.defaultLaunchProfileId = next[0].id;
+  }
+  saveSettings(settings);
+  return { ok: true, defaultProfileId: settings.defaultLaunchProfileId };
+});
+
+ipcMain.handle("launch-profile-set-default", (_event, { profileId } = {}) => {
+  const list = Array.isArray(settings.launchProfiles) ? settings.launchProfiles : [];
+  if (!list.some((p) => p && p.id === profileId)) {
+    return { ok: false, error: "Profile not found" };
+  }
+  settings.defaultLaunchProfileId = profileId;
+  saveSettings(settings);
+  return { ok: true };
 });
 
 // ── StudyBuddy integration ───────────────────────────────────────

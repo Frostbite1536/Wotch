@@ -10,6 +10,7 @@ const path = require("path");
 const os = require("os");
 const { EventEmitter } = require("events");
 const WebSocket = require("ws");
+const { redactLaunchProfiles } = require("./launch-profiles");
 
 const API_TOKEN_PATH = path.join(os.homedir(), ".wotch", "api-token");
 const API_PORT_PATH = path.join(os.homedir(), ".wotch", "api-port");
@@ -650,10 +651,25 @@ class ApiServer extends EventEmitter {
     this.router.post("/v1/tabs", (req, res, params, query, body) => {
       const { createPty } = this.options;
       const cwd = body?.cwd || os.homedir();
+
+      // Optional launch profile — selects the command and env for this tab.
+      // Reject an unknown id rather than silently falling back, so a caller
+      // asking for a specific provider never gets a different one.
+      let profileId;
+      if (body && body.profileId !== undefined) {
+        const settings = this.options.loadSettings();
+        const known = Array.isArray(settings.launchProfiles) ? settings.launchProfiles : [];
+        if (typeof body.profileId !== "string" || !known.some((p) => p && p.id === body.profileId)) {
+          this._sendJson(res, 422, { ok: false, error: "Unknown profileId", code: "VALIDATION_ERROR" });
+          return;
+        }
+        profileId = body.profileId;
+      }
+
       const tabId = `tab-${Date.now()}-${crypto.randomBytes(2).toString("hex")}`;
       try {
-        createPty(tabId, cwd);
-        this._sendJson(res, 201, { ok: true, data: { tabId, type: "pty", cwd } });
+        createPty(tabId, cwd, profileId);
+        this._sendJson(res, 201, { ok: true, data: { tabId, type: "pty", cwd, profileId: profileId || null } });
       } catch (err) {
         this._sendJson(res, 500, { ok: false, error: "Failed to create tab", code: "INTERNAL_ERROR" });
       }
@@ -801,6 +817,7 @@ class ApiServer extends EventEmitter {
     this.router.get("/v1/settings", (req, res) => {
       const s = { ...this.options.loadSettings() };
       delete s.sshProfiles; // INV-SEC-013
+      s.launchProfiles = redactLaunchProfiles(s.launchProfiles); // INV-SEC-020
       this._sendJson(res, 200, { ok: true, data: s });
     });
 
@@ -813,6 +830,12 @@ class ApiServer extends EventEmitter {
       // Reject sshProfiles — INV-SEC-013
       if ("sshProfiles" in body) {
         this._sendJson(res, 422, { ok: false, error: "sshProfiles cannot be modified via the API", code: "VALIDATION_ERROR" });
+        return;
+      }
+      // Reject launchProfiles — INV-SEC-020. Profiles carry env that feeds
+      // every PTY spawn; they are editable from the settings UI only.
+      if ("launchProfiles" in body) {
+        this._sendJson(res, 422, { ok: false, error: "launchProfiles cannot be modified via the API", code: "VALIDATION_ERROR" });
         return;
       }
 
@@ -845,6 +868,7 @@ class ApiServer extends EventEmitter {
       const result = resetSettingsFn();
       const redacted = { ...result };
       delete redacted.sshProfiles;
+      redacted.launchProfiles = redactLaunchProfiles(redacted.launchProfiles); // INV-SEC-020
       this._sendJson(res, 200, { ok: true, data: redacted });
     });
 
@@ -869,6 +893,7 @@ class ApiServer extends EventEmitter {
       pinned: { type: "boolean" },
       theme: { type: "enum", values: ["dark", "light", "purple", "green"] },
       autoLaunchClaude: { type: "boolean" },
+      defaultLaunchProfileId: { type: "string", maxLen: 64 },
       displayIndex: { type: "number", min: 0, max: 9 },
       position: { type: "enum", values: ["top", "left", "right"] },
       apiEnabled: { type: "boolean" },
