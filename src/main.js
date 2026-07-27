@@ -4723,6 +4723,11 @@ ipcMain.handle("launch-profile-save", (_event, profile) => {
   const normalized = launchProfiles.normalizeProfile(profile);
   if (!normalized) return { ok: false, error: "Invalid profile" };
 
+  // INV-SEC-020 is enforced here, at the only path that writes profile env to
+  // disk. Reads stay permissive so an existing settings file still loads.
+  const envError = launchProfiles.validateProfileEnv(normalized.env);
+  if (envError) return { ok: false, error: envError };
+
   const list = Array.isArray(settings.launchProfiles) ? [...settings.launchProfiles] : [];
   const idx = list.findIndex((p) => p && p.id === normalized.id);
   if (idx >= 0) {

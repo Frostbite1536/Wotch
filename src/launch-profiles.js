@@ -51,6 +51,50 @@ function isPureEnvReference(value) {
   return typeof value === "string" && value.length > 0 && PURE_REF_RE.test(value);
 }
 
+/**
+ * True when a value contains at least one real `$NAME` / `${NAME}` reference.
+ * `$$` is an escape producing a literal `$`, so it does not count — dropping
+ * escapes first keeps `$$FOO` (literal) from passing as a reference.
+ */
+function containsEnvReference(value) {
+  if (typeof value !== "string") return false;
+  const withoutEscapes = value.replace(/\$\$/g, "");
+  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(withoutEscapes);
+}
+
+/** True for key names that conventionally carry a credential. */
+function isSecretishKey(key) {
+  return typeof key === "string" && SECRETISH_KEY_RE.test(key);
+}
+
+/**
+ * Enforce INV-SEC-020 at the write boundary: a credential-shaped key may not
+ * carry literal secret material, because profile env is persisted to
+ * ~/.wotch/settings.json in plain text.
+ *
+ * Permitted under such a key:
+ *   - the empty string (clearing a variable, e.g. ANTHROPIC_API_KEY=)
+ *   - anything containing a `$NAME` reference, including decorated forms
+ *     such as `Bearer $TOKEN` — the secret itself still never touches disk
+ *
+ * This is a guard against accident, not against a user determined to defeat
+ * it on their own machine. Returns an error string, or null when the env is
+ * acceptable. Callers apply it on save only; reads stay permissive so an
+ * existing settings file is never silently rewritten.
+ */
+function validateProfileEnv(env) {
+  if (!env || typeof env !== "object") return null;
+  for (const key of Object.keys(env)) {
+    const value = env[key];
+    if (typeof value !== "string") continue;
+    if (!isSecretishKey(key)) continue;
+    if (value === "" || containsEnvReference(value)) continue;
+    return `${key} looks like a literal secret. Reference it as $NAME instead — `
+      + "profile env is stored in plain text (INV-SEC-020).";
+  }
+  return null;
+}
+
 /** Parse `KEY=VALUE` lines from the settings editor. Blank lines and `#` comments are skipped. */
 function parseEnvLines(text) {
   const env = {};
@@ -80,7 +124,14 @@ function formatEnvLines(env) {
     .join("\n");
 }
 
-/** Coerce arbitrary input into a well-formed profile, or null if unusable. */
+/**
+ * Coerce arbitrary input into a well-formed profile, or null if unusable.
+ *
+ * Deliberately permissive about env *values*: this is the read path used by
+ * migration and API redaction, so it must load whatever is already on disk
+ * rather than dropping it. The credential rule is enforced separately by
+ * validateProfileEnv() on the save path.
+ */
 function normalizeProfile(raw) {
   if (!raw || typeof raw !== "object") return null;
   const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 64) : "";
@@ -191,6 +242,9 @@ module.exports = {
   ENV_NAME_RE,
   expandEnvRefs,
   isPureEnvReference,
+  containsEnvReference,
+  isSecretishKey,
+  validateProfileEnv,
   parseEnvLines,
   formatEnvLines,
   normalizeProfile,

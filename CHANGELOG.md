@@ -15,7 +15,10 @@ All notable changes to Wotch are documented here. The format is loosely based on
 - Env values support `$NAME` / `${NAME}` references expanded from Wotch's own
   environment at spawn time, keeping API keys out of `~/.wotch/settings.json`
   (new invariant **INV-SEC-020**). `$$` escapes a literal `$`; expansion is
-  single-pass so a variable's value is never re-expanded.
+  single-pass so a variable's value is never re-expanded. Saving a profile is
+  **rejected** when a credential-shaped key holds a literal value, so the rule
+  is enforced rather than only documented; reads stay permissive so an existing
+  settings file is never silently rewritten.
 - `POST /v1/tabs` accepts an optional `profileId`, rejecting unknown ids with
   422 rather than silently falling back to the default profile.
 - `src/launch-profiles.js` plus 41 unit tests covering reference expansion,

@@ -92,7 +92,7 @@ All three integration channels (hooks, MCP, IDE bridge) work with OpenClaude sin
 
 A profile is a command plus the environment it runs under. Each tab launches one, so you can keep Claude Code in one tab and an open-weight model like Kimi K3 or Qwen in the next. Configure them in **Settings > AI Profiles**, then open a tab with `Ctrl+Shift+P` > **New Tab: \<profile\>**.
 
-**Secrets stay out of Wotch.** Env values may reference variables from your own environment with `$NAME` — Wotch expands them when it spawns the shell and never writes the value to `~/.wotch/settings.json` (see INV-SEC-020). Export the key once in your shell profile or OS environment:
+**Secrets stay out of Wotch.** Env values may reference variables from your own environment with `$NAME` — Wotch expands them when it spawns the shell and never writes the value to `~/.wotch/settings.json` (see INV-SEC-020). Saving a profile is rejected outright if a key like `API_KEY` or `AUTH_TOKEN` holds a literal value instead of a reference. Export the key once in your shell profile or OS environment:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...

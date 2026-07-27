@@ -12,6 +12,9 @@ const assert = require("node:assert/strict");
 const {
   expandEnvRefs,
   isPureEnvReference,
+  containsEnvReference,
+  isSecretishKey,
+  validateProfileEnv,
   parseEnvLines,
   formatEnvLines,
   normalizeProfile,
@@ -77,6 +80,102 @@ describe("isPureEnvReference", () => {
     assert.equal(isPureEnvReference("Bearer $TOKEN"), false);
     assert.equal(isPureEnvReference(""), false);
     assert.equal(isPureEnvReference(null), false);
+  });
+});
+
+describe("containsEnvReference", () => {
+  test("true when a real reference is present", () => {
+    assert.equal(containsEnvReference("$TOKEN"), true);
+    assert.equal(containsEnvReference("${TOKEN}"), true);
+    assert.equal(containsEnvReference("Bearer $TOKEN"), true);
+  });
+
+  test("false for literals", () => {
+    assert.equal(containsEnvReference("sk-or-v1-abc123"), false);
+    assert.equal(containsEnvReference(""), false);
+    assert.equal(containsEnvReference(null), false);
+  });
+
+  test("an escaped $$ is not a reference", () => {
+    // "$$FOO" expands to the literal "$FOO", so it carries no lookup.
+    assert.equal(containsEnvReference("$$FOO"), false);
+    assert.equal(containsEnvReference("$$"), false);
+  });
+
+  test("an escape followed by a real reference still counts", () => {
+    assert.equal(containsEnvReference("$$$FOO"), true);
+  });
+});
+
+describe("isSecretishKey", () => {
+  test("matches credential-shaped names", () => {
+    for (const k of ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "MY_SECRET", "DB_PASSWORD", "GH_CREDENTIAL"]) {
+      assert.equal(isSecretishKey(k), true, k);
+    }
+  });
+
+  test("does not match ordinary configuration", () => {
+    for (const k of ["OPENAI_BASE_URL", "OPENAI_MODEL", "PATH", "CLAUDE_CODE_USE_OPENAI"]) {
+      assert.equal(isSecretishKey(k), false, k);
+    }
+  });
+});
+
+describe("validateProfileEnv (INV-SEC-020 write boundary)", () => {
+  test("rejects a literal credential under a secret-shaped key", () => {
+    const err = validateProfileEnv({ OPENAI_API_KEY: "sk-or-v1-literalsecret" });
+    assert.match(err, /OPENAI_API_KEY/);
+    assert.match(err, /\$NAME/);
+  });
+
+  test("accepts a reference under the same key", () => {
+    assert.equal(validateProfileEnv({ OPENAI_API_KEY: "$OPENROUTER_API_KEY" }), null);
+    assert.equal(validateProfileEnv({ ANTHROPIC_AUTH_TOKEN: "${OPENROUTER_API_KEY}" }), null);
+  });
+
+  test("accepts an empty value so a variable can be cleared", () => {
+    // The documented OpenRouter profile needs ANTHROPIC_API_KEY= to unset it.
+    assert.equal(validateProfileEnv({ ANTHROPIC_API_KEY: "" }), null);
+  });
+
+  test("accepts a decorated reference — the secret still never hits disk", () => {
+    assert.equal(validateProfileEnv({ AUTH_HEADER: "Bearer $TOKEN" }), null);
+  });
+
+  test("allows literal values under non-secret keys", () => {
+    assert.equal(validateProfileEnv({
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+      OPENAI_MODEL: "moonshotai/kimi-k3",
+      CLAUDE_CODE_USE_OPENAI: "1",
+    }), null);
+  });
+
+  test("rejects an escaped-dollar literal that only looks like a reference", () => {
+    assert.notEqual(validateProfileEnv({ API_KEY: "$$NOT_A_REFERENCE" }), null);
+  });
+
+  test("validates the whole documented OpenRouter profile", () => {
+    assert.equal(validateProfileEnv({
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+      ANTHROPIC_AUTH_TOKEN: "$OPENROUTER_API_KEY",
+      ANTHROPIC_API_KEY: "",
+    }), null);
+  });
+
+  test("tolerates junk input", () => {
+    assert.equal(validateProfileEnv(null), null);
+    assert.equal(validateProfileEnv({ A: 5 }), null);
+  });
+});
+
+describe("normalizeProfile stays permissive on the read path", () => {
+  test("loads an existing literal rather than dropping it", () => {
+    // Migration and API redaction both go through normalizeProfile; rejecting
+    // here would silently rewrite a user's settings file.
+    const p = normalizeProfile({ id: "x", env: { OPENAI_API_KEY: "sk-legacy-literal" } });
+    assert.equal(p.env.OPENAI_API_KEY, "sk-legacy-literal");
+    // ...but it is still redacted before leaving the process.
+    assert.equal(redactLaunchProfiles([p])[0].env.OPENAI_API_KEY, "***");
   });
 });
 
