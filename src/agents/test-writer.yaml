@@ -2,7 +2,7 @@ name: test-writer
 displayName: Test Writer
 description: Generates tests for recently changed code
 version: "1.0.0"
-model: claude-sonnet-4-6-20250514
+model: claude-sonnet-4-6
 
 systemPrompt: |
   You are a test writing assistant integrated into Wotch.

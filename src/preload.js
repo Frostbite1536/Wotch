@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("wotch", {
   // PTY
-  createPty: (tabId, cwd) => ipcRenderer.invoke("pty-create", { tabId, cwd }),
+  createPty: (tabId, cwd, profileId) => ipcRenderer.invoke("pty-create", { tabId, cwd, profileId }),
   writePty: (tabId, data) => ipcRenderer.send("pty-write", { tabId, data }),
   resizePty: (tabId, cols, rows) => ipcRenderer.send("pty-resize", { tabId, cols, rows }),
   killPty: (tabId) => ipcRenderer.send("pty-kill", { tabId }),
@@ -47,6 +47,13 @@ contextBridge.exposeInMainWorld("wotch", {
   getSettings: () => ipcRenderer.invoke("get-settings"),
   saveSettings: (settings) => ipcRenderer.invoke("save-settings", settings),
   resetSettings: () => ipcRenderer.invoke("reset-settings"),
+
+  // Launch profiles (per-tab AI CLI + env)
+  launchProfilesList: () => ipcRenderer.invoke("launch-profiles-list"),
+  launchProfileSave: (profile) => ipcRenderer.invoke("launch-profile-save", profile),
+  launchProfileDelete: (profileId) => ipcRenderer.invoke("launch-profile-delete", { profileId }),
+  launchProfileSetDefault: (profileId) =>
+    ipcRenderer.invoke("launch-profile-set-default", { profileId }),
 
   // Pin mode
   setPinned: (pinned) => ipcRenderer.invoke("set-pinned", pinned),

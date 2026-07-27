@@ -432,8 +432,9 @@ function splitActivePane(direction) {
     const idx = parent.children.indexOf(leaf);
     parent.children[idx] = splitNode;
   }
-  // Create PTY for new pane
-  window.wotch.createPty(newLeaf.paneId, pane ? pane.cwd : undefined);
+  // Create PTY for new pane — inherits the tab's launch profile so a split
+  // inside a "Kimi K3" tab does not silently come up on a different provider.
+  window.wotch.createPty(newLeaf.paneId, pane ? pane.cwd : undefined, tab.launchProfileId);
   tab.activePaneId = newLeaf.paneId;
   renderSplitNode(tab.rootNode, tab.el);
   fitAllPanes(tab.rootNode);
@@ -487,11 +488,35 @@ function navigatePane(direction) {
   if (pane) pane.term.focus();
 }
 
+// ── Launch profiles ────────────────────────────────────
+// Cached so tab creation does not await IPC on the hot path. Refreshed on
+// startup and after any edit in the settings panel.
+let launchProfilesCache = { profiles: [], defaultProfileId: "" };
+
+async function refreshLaunchProfiles() {
+  try {
+    const res = await window.wotch.launchProfilesList();
+    if (res && Array.isArray(res.profiles)) launchProfilesCache = res;
+  } catch { /* keep the previous cache */ }
+  return launchProfilesCache;
+}
+
+function findLaunchProfile(profileId) {
+  const { profiles, defaultProfileId } = launchProfilesCache;
+  if (!profiles || profiles.length === 0) return null;
+  return (
+    profiles.find((p) => p.id === profileId) ||
+    profiles.find((p) => p.id === defaultProfileId) ||
+    profiles[0]
+  );
+}
+
 // ── Tab management ─────────────────────────────────────
-async function createTab(cwdOverride, sshProfile) {
+async function createTab(cwdOverride, sshProfile, launchProfileId) {
   tabCounter++;
   const tabId = `tab-${tabCounter}`;
   const cwd = cwdOverride || (currentProject ? currentProject.path : await window.wotch.getCwd());
+  const launchProfile = sshProfile ? null : findLaunchProfile(launchProfileId);
   const name = sshProfile
     ? `SSH: ${sshProfile.name}`
     : (currentProject ? currentProject.name : `Session ${tabCounter}`);
@@ -514,6 +539,7 @@ async function createTab(cwdOverride, sshProfile) {
     id: tabId, name, rootNode: rootLeaf, activePaneId: paneId, el: containerEl,
     connectionType: sshProfile ? "ssh" : "local",
     profileId: sshProfile ? sshProfile.id : null,
+    launchProfileId: launchProfile ? launchProfile.id : null,
   };
   tabs.push(tab);
 
@@ -552,15 +578,16 @@ async function createTab(cwdOverride, sshProfile) {
       password = null;
     }
   } else {
-    // Local PTY — use paneId as the PTY key
-    await window.wotch.createPty(paneId, cwd);
+    // Local PTY — use paneId as the PTY key. The profile also supplies the
+    // env the shell is spawned with (main process expands its $VAR refs).
+    await window.wotch.createPty(paneId, cwd, launchProfile ? launchProfile.id : undefined);
 
-    // Auto-launch Claude if enabled
+    // Auto-launch the profile's command if enabled
     try {
       const s = await window.wotch.getSettings();
       if (s.autoLaunchClaude) {
-        const cmd = s.launchCommand || "claude";
-        setTimeout(() => window.wotch.writePty(paneId, cmd + "\r"), 500);
+        const cmd = (launchProfile && launchProfile.command) || s.launchCommand || "claude";
+        if (cmd) setTimeout(() => window.wotch.writePty(paneId, cmd + "\r"), 500);
       }
     } catch { /* ignore */ }
   }
@@ -1055,7 +1082,7 @@ const setRememberPin = document.getElementById("set-remember-pin");
 const setDefaultShell = document.getElementById("set-default-shell");
 const setTheme = document.getElementById("set-theme");
 const setAutoLaunchClaude = document.getElementById("set-auto-claude");
-const setLaunchCommand = document.getElementById("set-launch-command");
+const launchProfilesListEl = document.getElementById("launch-profiles-list");
 const setDisplay = document.getElementById("set-display");
 const setPosition = document.getElementById("set-position");
 const setHoverEnabled = document.getElementById("set-hover-enabled");
@@ -1160,7 +1187,7 @@ async function loadSettingsUI() {
     setDefaultShell.value = s.defaultShell || "";
     if (setTheme) setTheme.value = s.theme || "dark";
     if (setAutoLaunchClaude) setAutoLaunchClaude.classList.toggle("on", s.autoLaunchClaude || false);
-    if (setLaunchCommand) setLaunchCommand.value = s.launchCommand || "claude";
+    renderLaunchProfiles();
     if (setPosition) setPosition.value = s.position || "top";
     // Populate display selector
     if (setDisplay) {
@@ -1187,7 +1214,7 @@ async function loadSettingsUI() {
     if (setStudybuddyEnabled) setStudybuddyEnabled.classList.toggle("on", s.studybuddyIntegrationEnabled !== false);
     refreshStudybuddyStatus();
     // Claude API settings
-    if (setChatDefaultModel) setChatDefaultModel.value = s.chatDefaultModel || "claude-sonnet-4-6-20250514";
+    if (setChatDefaultModel) setChatDefaultModel.value = s.chatDefaultModel || "claude-sonnet-4-6";
     if (setMonthlyBudget) setMonthlyBudget.value = s.apiBudgetMonthly || "";
     checkApiKeyStatus();
     refreshUsageDisplay();
@@ -1211,7 +1238,6 @@ function debouncedSave() {
       defaultShell: setDefaultShell.value.trim(),
       theme: setTheme ? setTheme.value : "dark",
       autoLaunchClaude: setAutoLaunchClaude ? setAutoLaunchClaude.classList.contains("on") : false,
-      launchCommand: setLaunchCommand ? setLaunchCommand.value.trim() || "claude" : "claude",
       displayIndex: setDisplay ? parseInt(setDisplay.value) || 0 : 0,
       position: setPosition ? setPosition.value : "top",
       hoverEnabled: setHoverEnabled ? setHoverEnabled.classList.contains("on") : true,
@@ -1221,7 +1247,7 @@ function debouncedSave() {
       integrationBridgePort: setBridgePort ? parseInt(setBridgePort.value) || 19521 : 19521,
       apiEnabled: setApiEnabled ? setApiEnabled.classList.contains("on") : false,
       apiPort: setApiPort ? parseInt(setApiPort.value) || 19519 : 19519,
-      chatDefaultModel: setChatDefaultModel ? setChatDefaultModel.value : "claude-sonnet-4-6-20250514",
+      chatDefaultModel: setChatDefaultModel ? setChatDefaultModel.value : "claude-sonnet-4-6",
       studybuddyIntegrationEnabled: setStudybuddyEnabled ? setStudybuddyEnabled.classList.contains("on") : true,
     };
     await window.wotch.saveSettings(newSettings);
@@ -1229,7 +1255,7 @@ function debouncedSave() {
 }
 
 // Wire up number inputs
-[setExpandedWidth, setExpandedHeight, setPillWidth, setCollapseDelay, setHoverPadding, setDefaultShell, setLaunchCommand].forEach((el) => {
+[setExpandedWidth, setExpandedHeight, setPillWidth, setCollapseDelay, setHoverPadding, setDefaultShell].forEach((el) => {
   if (el) el.addEventListener("input", debouncedSave);
 });
 
@@ -1758,7 +1784,7 @@ async function sendChatMessage() {
     currentProject?.path || null,
     text,
     {
-      model: chatModelSelect?.value || "claude-sonnet-4-6-20250514",
+      model: chatModelSelect?.value || "claude-sonnet-4-6",
       contextSources: { ...chatContextEnabled },
     }
   );
@@ -1987,6 +2013,164 @@ let editingProfileId = null;
 
 function escapeHtmlAttr(str) {
   return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Launch Profile Settings ──────────────────────────
+// Mirrors the SSH profile editor: a list of rows, one inline expandable form.
+const btnLaunchProfileAdd = document.getElementById("btn-launch-profile-add");
+let editingLaunchProfileId = null;
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// Kept in sync with parseEnvLines/formatEnvLines in src/launch-profiles.js —
+// the main process re-parses and normalizes whatever we send it.
+function parseEnvText(text) {
+  const env = {};
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!ENV_NAME_RE.test(key)) continue;
+    env[key] = line.slice(eq + 1).trim();
+  }
+  return env;
+}
+
+function formatEnvText(env) {
+  if (!env || typeof env !== "object") return "";
+  return Object.keys(env).map((k) => `${k}=${env[k]}`).join("\n");
+}
+
+function launchProfileSummary(p) {
+  const cmd = p.command ? p.command : "(no command)";
+  const envCount = p.env ? Object.keys(p.env).length : 0;
+  return envCount > 0 ? `${cmd} · ${envCount} env var${envCount === 1 ? "" : "s"}` : cmd;
+}
+
+async function renderLaunchProfiles() {
+  if (!launchProfilesListEl) return;
+  const { profiles, defaultProfileId } = await refreshLaunchProfiles();
+  launchProfilesListEl.innerHTML = "";
+
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    const isDefault = p.id === defaultProfileId;
+    row.innerHTML = `
+      <div style="min-width:0;flex:1;">
+        <div class="setting-label">${escapeHtml(p.name)}${isDefault ? " <span style=\"color:var(--text-muted);font-weight:400;\">(default)</span>" : ""}</div>
+        <div class="setting-hint">${escapeHtml(launchProfileSummary(p))}</div>
+      </div>
+      <div style="display:flex;gap:4px;">
+        ${isDefault ? "" : `<button class="settings-reset-btn lp-default-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;">Default</button>`}
+        <button class="settings-reset-btn lp-edit-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;">Edit</button>
+        ${profiles.length > 1 ? `<button class="settings-reset-btn lp-del-btn" data-id="${escapeHtmlAttr(p.id)}" style="font-size:11px;color:#f87171;">Delete</button>` : ""}
+      </div>
+    `;
+    launchProfilesListEl.appendChild(row);
+
+    if (editingLaunchProfileId === p.id) {
+      launchProfilesListEl.appendChild(buildLaunchProfileEditor(p));
+    }
+  }
+
+  if (editingLaunchProfileId === "__new__") {
+    launchProfilesListEl.appendChild(
+      buildLaunchProfileEditor({ id: "", name: "", command: "", env: {} }),
+    );
+  }
+
+  launchProfilesListEl.querySelectorAll(".lp-edit-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      editingLaunchProfileId = editingLaunchProfileId === btn.dataset.id ? null : btn.dataset.id;
+      renderLaunchProfiles();
+    });
+  });
+  launchProfilesListEl.querySelectorAll(".lp-default-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const res = await window.wotch.launchProfileSetDefault(btn.dataset.id);
+      if (res && res.ok) showToast("Default profile updated", "info");
+      renderLaunchProfiles();
+    });
+  });
+  launchProfilesListEl.querySelectorAll(".lp-del-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const res = await window.wotch.launchProfileDelete(btn.dataset.id);
+      if (!res || !res.ok) { showToast((res && res.error) || "Delete failed", "error"); return; }
+      if (editingLaunchProfileId === btn.dataset.id) editingLaunchProfileId = null;
+      showToast("Profile deleted", "info");
+      renderLaunchProfiles();
+    });
+  });
+}
+
+function buildLaunchProfileEditor(profile) {
+  const isNew = !profile.id;
+  const box = document.createElement("div");
+  box.style.cssText = "padding:8px 0 12px;border-bottom:1px solid var(--border,#2a2a2a);";
+  box.innerHTML = `
+    <div class="setting-row">
+      <div><div class="setting-label">Name</div></div>
+      <input type="text" class="setting-input" id="lp-name" placeholder="Kimi K3" style="width:150px;">
+    </div>
+    <div class="setting-row">
+      <div><div class="setting-label">Command</div></div>
+      <input type="text" class="setting-input" id="lp-command" placeholder="claude" style="width:150px;">
+    </div>
+    <div style="padding:4px 0;">
+      <div class="setting-label" style="margin-bottom:4px;">Environment</div>
+      <div class="setting-hint" style="margin-bottom:4px;">One <code>KEY=VALUE</code> per line. <code>$NAME</code> reads from your environment.</div>
+      <textarea id="lp-env" rows="4" class="setting-input" spellcheck="false"
+        style="width:100%;font-family:var(--mono,monospace);font-size:11px;resize:vertical;"
+        placeholder="ANTHROPIC_BASE_URL=https://openrouter.ai/api&#10;ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY&#10;ANTHROPIC_API_KEY="></textarea>
+    </div>
+    <div style="display:flex;gap:4px;justify-content:flex-end;padding-top:6px;">
+      <button class="settings-reset-btn" id="lp-cancel" style="font-size:11px;">Cancel</button>
+      <button class="settings-reset-btn" id="lp-save" style="font-size:11px;">Save</button>
+    </div>
+  `;
+
+  const nameEl = box.querySelector("#lp-name");
+  const cmdEl = box.querySelector("#lp-command");
+  const envEl = box.querySelector("#lp-env");
+  nameEl.value = profile.name || "";
+  cmdEl.value = profile.command || "";
+  envEl.value = formatEnvText(profile.env);
+
+  box.querySelector("#lp-cancel").addEventListener("click", () => {
+    editingLaunchProfileId = null;
+    renderLaunchProfiles();
+  });
+
+  box.querySelector("#lp-save").addEventListener("click", async () => {
+    const name = nameEl.value.trim();
+    if (!name) { showToast("Profile needs a name", "error"); return; }
+
+    // Derive a stable slug id for new profiles; existing ids never change so
+    // tabs already bound to a profile keep resolving after a rename.
+    const id = isNew
+      ? `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile"}-${Date.now().toString(36)}`
+      : profile.id;
+
+    const res = await window.wotch.launchProfileSave({
+      id, name, command: cmdEl.value.trim(), env: parseEnvText(envEl.value),
+    });
+    if (!res || !res.ok) { showToast((res && res.error) || "Save failed", "error"); return; }
+    editingLaunchProfileId = null;
+    showToast(isNew ? "Profile created" : "Profile saved", "success");
+    renderLaunchProfiles();
+  });
+
+  return box;
+}
+
+if (btnLaunchProfileAdd) {
+  btnLaunchProfileAdd.addEventListener("click", () => {
+    editingLaunchProfileId = editingLaunchProfileId === "__new__" ? null : "__new__";
+    renderLaunchProfiles();
+  });
 }
 
 async function renderSshProfiles() {
@@ -2569,8 +2753,20 @@ function getFilteredCommandsWithPlugins() {
   const sbOn = studybuddyAvailable && studybuddyAvailable.available
     && studybuddyAvailable.installed && studybuddyAvailable.enabled;
   const base = sbOn ? COMMANDS : COMMANDS.filter((c) => !c.studybuddy);
+  // Per-profile tab entries are only useful once more than one exists —
+  // otherwise they just duplicate "New Tab".
+  const profiles = launchProfilesCache.profiles || [];
+  const profileCommands = profiles.length > 1
+    ? profiles.map((p) => ({
+      name: `New Tab: ${p.name}`,
+      shortcut: "",
+      action: () => createTab(undefined, undefined, p.id),
+    }))
+    : [];
+
   const all = [
     ...base,
+    ...profileCommands,
     ...pluginCommands.map(pc => ({
       name: pc.title,
       shortcut: "",
@@ -3050,6 +3246,10 @@ COMMANDS.push(
 // ── Init ───────────────────────────────────────────────
 // Auto-detect projects on startup and pre-select first VS Code one
 (async () => {
+  // Populate the profile cache before any tab exists — createTab() reads it
+  // synchronously to pick the command and env for the new PTY.
+  await refreshLaunchProfiles();
+
   // Restore tabs with saved working directories, or create default tab
   try {
     const s = await window.wotch.getSettings();

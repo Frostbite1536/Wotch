@@ -25,6 +25,7 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Directory persistence** — tabs remember their working directory across restarts
 - **Claude finish notification** — system notification when Claude is done (while Wotch is in background)
 - **Auto-launch Claude** — optionally type `claude` in every new tab
+- **Per-tab AI profiles** — run Claude Code in one tab and Kimi K3, Qwen, or any other CLI in the next, each with its own command and environment
 - **Disable hover** — toggle hover-to-open off in settings for hotkey-only mode
 - **Customizable position** — place the notch at the top, left, or right edge of your screen
 - **Centered resize** — drag to resize expands symmetrically from center (top position)
@@ -86,6 +87,36 @@ Wotch works with [OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude
 4. New tabs will auto-run OpenClaude with your configured model
 
 All three integration channels (hooks, MCP, IDE bridge) work with OpenClaude since it's built on the same Claude Code codebase and reads the same config files (`~/.claude/settings.json`, `~/.claude/ide/`).
+
+## AI Profiles (open-weight models via OpenRouter)
+
+A profile is a command plus the environment it runs under. Each tab launches one, so you can keep Claude Code in one tab and an open-weight model like Kimi K3 or Qwen in the next. Configure them in **Settings > AI Profiles**, then open a tab with `Ctrl+Shift+P` > **New Tab: \<profile\>**.
+
+**Secrets stay out of Wotch.** Env values may reference variables from your own environment with `$NAME` — Wotch expands them when it spawns the shell and never writes the value to `~/.wotch/settings.json` (see INV-SEC-020). Saving a profile is rejected outright if a key like `API_KEY` or `AUTH_TOKEN` holds a literal value instead of a reference. Export the key once in your shell profile or OS environment:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+**Profile for an OpenAI-compatible CLI** (the supported path for non-Anthropic models — [OpenRouter is natively OpenAI-compatible](https://openrouter.ai/docs/quickstart)):
+
+| Field | Value |
+|-------|-------|
+| Name | `Kimi K3` |
+| Command | `openclaude` |
+| Environment | `CLAUDE_CODE_USE_OPENAI=1`<br>`OPENAI_BASE_URL=https://openrouter.ai/api/v1`<br>`OPENAI_API_KEY=$OPENROUTER_API_KEY`<br>`OPENAI_MODEL=moonshotai/kimi-k3` |
+
+**Profile for Claude Code against OpenRouter's Anthropic-compatible endpoint:**
+
+| Field | Value |
+|-------|-------|
+| Name | `Claude via OpenRouter` |
+| Command | `claude` |
+| Environment | `ANTHROPIC_BASE_URL=https://openrouter.ai/api`<br>`ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY`<br>`ANTHROPIC_API_KEY=` |
+
+> **Caveat, straight from OpenRouter's own docs:** this second shape is *"only guaranteed to work with the Anthropic first-party provider"* — Claude Code *"is optimized for Anthropic models and may not work correctly with other providers."* Pointing it at Kimi K3 or Qwen may work but is unsupported; prefer an OpenAI-compatible CLI for those. See [OpenRouter's Claude Code integration guide](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration).
+
+Split panes inherit their tab's profile, so `Ctrl+Shift+D` inside a Kimi tab gives you another Kimi pane rather than silently switching providers.
 
 ## Development Setup
 
@@ -275,7 +306,9 @@ Click the ⚙ gear in the bottom-right corner to open the settings panel. All ch
 
 **Position:** place the notch at the top (horizontal, default), left (vertical), or right (vertical) edge of the screen. Left and right modes display the pill vertically and expand the panel from the corresponding screen edge.
 
-**Behavior:** collapse delay (how long before the panel closes on mouse leave), hover padding (how far from the pill the hover zone extends), start expanded (open panel on launch), remember pin state (persist pin across restarts), auto-launch Claude (type `claude` in every new tab).
+**Behavior:** collapse delay (how long before the panel closes on mouse leave), hover padding (how far from the pill the hover zone extends), start expanded (open panel on launch), remember pin state (persist pin across restarts), auto-launch command (run the tab's profile command in every new tab).
+
+**AI Profiles:** the command and environment each tab launches with — see [AI Profiles](#ai-profiles-open-weight-models-via-openrouter) above. Your existing `launchCommand` is migrated into a profile named "Default" on first run.
 
 **Display:** target display — choose which monitor to show the pill on (for multi-monitor setups).
 

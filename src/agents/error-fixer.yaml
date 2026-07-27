@@ -2,7 +2,7 @@ name: error-fixer
 displayName: Error Fixer
 description: Detects terminal errors and suggests code fixes
 version: "1.0.0"
-model: claude-sonnet-4-6-20250514
+model: claude-sonnet-4-6
 
 systemPrompt: |
   You are an expert debugging assistant integrated into Wotch, a floating terminal overlay.

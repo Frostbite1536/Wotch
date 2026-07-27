@@ -285,6 +285,19 @@ Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `M
 
 **Enforcement:** `Agent.spawn` tool checks `context._agentDepth` before spawning. `AgentRuntime.stop()` iterates `childRunIds` and stops each recursively. `AgentManager.startAgent()` enforces `maxConcurrentAgents` globally.
 
+### INV-SEC-020: Launch Profile Env Holds References, Not Secrets
+Launch profile environment values are stored in `~/.wotch/settings.json` in plaintext, so they must never contain a credential. Secrets are referenced with `$NAME` / `${NAME}` and expanded from the Wotch process environment at PTY spawn time. Expansion is single-pass: a variable whose *value* contains `$FOO` is never expanded again. Profile env is layered over `process.env` but beneath `TERM` and `WOTCH_TAB_ID`, so a profile cannot break terminal rendering or hijack the tab id the hook receiver correlates on.
+
+The rule is enforced at the **write** boundary, not merely documented. `validateProfileEnv()` rejects a save when a credential-shaped key (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `AUTH`) carries a value that is neither empty nor contains a `$NAME` reference. Empty is permitted so a variable can be cleared (`ANTHROPIC_API_KEY=`); a decorated reference such as `Bearer $TOKEN` is permitted because the secret itself still never reaches disk. This guards against accident, not against a user determined to defeat it on their own machine.
+
+Reads stay permissive by design: `normalizeProfile()` loads whatever is already on disk so migration and redaction never silently rewrite a user's settings file. A pre-existing literal therefore still loads and still runs, but cannot be re-saved through the UI, and is redacted before leaving the process.
+
+`settings.launchProfiles` is modified exclusively through the `launch-profile-save` / `launch-profile-delete` / `launch-profile-set-default` IPC handlers; it is deliberately absent from `ALLOWED_SETTING_KEYS`, so the general `save-settings` path cannot clobber it. The Local API rejects `launchProfiles` on `PATCH /v1/settings` and redacts non-reference values under the same secret-shaped key names from `GET /v1/settings`.
+
+**Rationale:** Per-tab profiles exist to point a tab at a non-Anthropic provider, which inevitably means an API key. Storing that key in settings.json would regress the protection INV-SEC-014 gives the Anthropic key. A reference keeps the secret in the user's own environment, where it already lives.
+
+**Enforcement:** `validateProfileEnv()` on the `launch-profile-save` handler is the load-bearing check; `expandEnvRefs()` and `redactLaunchProfiles()` in `src/launch-profiles.js` cover spawn and API egress. All three have unit tests. Code review that `launchProfiles` stays out of `ALLOWED_SETTING_KEYS`.
+
 ## Invariant Change Log
 
 | Date | Invariant | Change | Reason |
@@ -302,3 +315,4 @@ Sub-agent spawning via `Agent.spawn` is limited to a maximum nesting depth of `M
 | 2026-03-31 | INV-AGENT-007 | Added for sub-agent spawning | Depth limit, cascading stop, global concurrent limit enforcement |
 | 2026-03-31 | INV-SEC-019 | Added for IDE Bridge | Bridge WebSocket localhost-only, token auth, DNS rebinding protection, lockfile cleanup |
 | 2026-03-31 | INV-UX-005 | Added for split panes | Pane tree integrity, paneMap consistency, activePaneId validity |
+| 2026-07-27 | INV-SEC-020 | Added for per-tab launch profiles | Profile env holds `$VAR` references rather than secrets; profiles isolated from general settings saves and redacted over the Local API |
