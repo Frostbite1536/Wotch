@@ -3,6 +3,7 @@ displayName: Test Writer
 description: Generates tests for recently changed code
 version: "1.0.0"
 model: claude-sonnet-4-6
+harness: anthropic
 
 systemPrompt: |
   You are a test writing assistant integrated into Wotch.

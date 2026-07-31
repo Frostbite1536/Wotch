@@ -220,7 +220,7 @@ contextBridge.exposeInMainWorld("wotch", {
   },
 
   // ── Agent SDK ──────────────────────────────────────────────────
-  listAgents: () => ipcRenderer.invoke("agent-list"),
+  listAgents: (projectPath) => ipcRenderer.invoke("agent-list", { projectPath }),
   startAgent: (agentId, context) => ipcRenderer.invoke("agent-start", { agentId, context }),
   stopAgent: (runId) => ipcRenderer.invoke("agent-stop", { runId }),
   approveAction: (runId, actionId, decision) =>
@@ -229,8 +229,33 @@ contextBridge.exposeInMainWorld("wotch", {
     ipcRenderer.invoke("agent-reject", { runId, actionId, reason }),
   getAgentRuns: () => ipcRenderer.invoke("agent-runs"),
   getAgentTree: () => ipcRenderer.invoke("agent-tree"),
-  getAgentTrust: (agentId) => ipcRenderer.invoke("agent-get-trust", { agentId }),
-  setAgentTrust: (agentId, mode) => ipcRenderer.invoke("agent-set-trust", { agentId, mode }),
+  getAgentTrust: (agentId, projectPath) => ipcRenderer.invoke("agent-get-trust", { agentId, projectPath }),
+  setAgentTrust: (agentId, mode, projectPath) => ipcRenderer.invoke("agent-set-trust", { agentId, mode, projectPath }),
+  // Durable Agent Runtime v2
+  agentRunsList: (projectPath, limit = 200) => ipcRenderer.invoke("agent-v2-runs-list", { projectPath, limit }),
+  agentRunEvents: (runId) => ipcRenderer.invoke("agent-v2-runs-events", { runId }),
+  agentRunStart: (agentId, context) => ipcRenderer.invoke("agent-v2-runs-start", { agentId, context }),
+  agentRunRetry: (runId) => ipcRenderer.invoke("agent-v2-runs-retry", { runId }),
+  agentRunResume: (runId, actionId, decision = "approve") => ipcRenderer.invoke("agent-v2-runs-resume", { runId, actionId, decision }),
+  agentRunStop: (runId) => ipcRenderer.invoke("agent-v2-runs-stop", { runId }),
+  agentRunApprove: (runId, actionId, decision = "approve") => ipcRenderer.invoke("agent-v2-runs-approve", { runId, actionId, decision }),
+  agentRunReject: (runId, actionId) => ipcRenderer.invoke("agent-v2-runs-reject", { runId, actionId }),
+  agentTrustGet: (projectPath, agentId) => ipcRenderer.invoke("agent-v2-trust-get", { projectPath, agentId }),
+  agentTrustUpdate: (projectPath, agentId, mode) => ipcRenderer.invoke("agent-v2-trust-update", { projectPath, agentId, mode }),
+  agentPolicyGet: (projectPath) => ipcRenderer.invoke("agent-v2-policy-get", { projectPath }),
+  agentPolicyUpdate: (projectPath, policy) => ipcRenderer.invoke("agent-v2-policy-update", { projectPath, policy }),
+  agentSettingsGet: () => ipcRenderer.invoke("agent-v2-settings-get"),
+  agentSettingsUpdate: (settings) => ipcRenderer.invoke("agent-v2-settings-update", settings),
+  agentMemoryStatus: (projectPath) => ipcRenderer.invoke("agent-v2-memory-status", { projectPath }),
+  agentMemoryEnable: (projectPath, enabled) => ipcRenderer.invoke("agent-v2-memory-enable", { projectPath, enabled }),
+  agentMemoryList: (projectPath, query = "") => ipcRenderer.invoke("agent-v2-memory-list", { projectPath, query }),
+  agentMemoryDelete: (projectPath, factId) => ipcRenderer.invoke("agent-v2-memory-delete", { projectPath, factId }),
+  agentMemoryHistory: (projectPath) => ipcRenderer.invoke("agent-v2-memory-history", { projectPath }),
+  agentMemoryRestore: (projectPath, version, expectedVersion) => ipcRenderer.invoke("agent-v2-memory-restore", { projectPath, version, expectedVersion }),
+  agentAutomationList: (projectPath) => ipcRenderer.invoke("agent-v2-automation-list", { projectPath }),
+  agentAutomationEnable: (projectPath, agentId, triggerId, standingApproval = false, approvalToken = null) => ipcRenderer.invoke("agent-v2-automation-enable", { projectPath, agentId, triggerId, standingApproval, approvalToken }),
+  agentAutomationDisable: (projectPath, agentId, triggerId) => ipcRenderer.invoke("agent-v2-automation-disable", { projectPath, agentId, triggerId }),
+  agentAutomationRunNow: (projectPath, agentId, triggerId) => ipcRenderer.invoke("agent-v2-automation-run-now", { projectPath, agentId, triggerId }),
   onAgentEvent: (callback) => {
     ipcRenderer.removeAllListeners("agent-event");
     ipcRenderer.on("agent-event", (_e, payload) => callback(payload));

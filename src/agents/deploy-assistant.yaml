@@ -3,6 +3,7 @@ displayName: Deploy Assistant
 description: Guides through deployment checklist with automated checks
 version: "1.0.0"
 model: claude-sonnet-4-6
+harness: anthropic
 
 systemPrompt: |
   You are a deployment assistant integrated into Wotch.
