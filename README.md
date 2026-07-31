@@ -37,7 +37,7 @@ Works on Windows, macOS (with or without a notch), and Linux (X11 and Wayland).
 - **Claude Code integration** — three-channel architecture: hooks (status events), MCP (tool access), IDE bridge (bidirectional WebSocket)
 - **[OpenClaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude) compatible** — use any LLM (GPT-4o, DeepSeek, Gemini, Llama, etc.) instead of Claude. Set the launch command to `openclaude` in Settings
 - **Plugin SDK** — extend Wotch with custom commands, status detectors, and panel views
-- **Agent SDK** — run autonomous AI agents with graduated trust, sub-agent spawning, and tool-specific UI rendering
+- **Durable Agent Runtime v2** — project-scoped trust, redacted audit history, queued runs, opt-in memory and automation, and recoverable approvals
 - **Local API** — HTTP + WebSocket API for external tool integration
 
 ## Install
@@ -123,7 +123,7 @@ Split panes inherit their tab's profile, so `Ctrl+Shift+D` inside a Kimi tab giv
 If you want to build from source:
 
 ### Requirements
-- Node.js 18+
+- Node.js 24.11.1 and npm 11.10.0 (see `.node-version` and `packageManager`)
 - C++ build tools for native module compilation (node-pty)
 
 ### 1. Install build tools (one-time)
@@ -154,7 +154,7 @@ xcode-select --install
 
 ```bash
 cd wotch
-npm install
+npm ci
 npm start
 ```
 
@@ -360,6 +360,7 @@ Wotch checks for VS Code, Code-OSS, and VSCodium config paths, including Flatpak
 ## Documentation
 
 - **[Architecture](docs/ARCHITECTURE.md)** — Components, data flow, design decisions, dependency rationale
+- **[Agent Runtime v2](docs/AGENT_RUNTIME.md)** — Durable runs, policy, trust, memory, automation, storage, and security boundaries
 - **[Invariants](docs/INVARIANTS.md)** — Non-negotiable rules for security, data integrity, UX, and cross-platform behavior
 - **[Roadmap](docs/ROADMAP.md)** — Phased plan with current status and future ideas
 - **[Threat Model](docs/THREAT_MODEL.md)** — STRIDE analysis, attack surface, trust boundaries, mitigations

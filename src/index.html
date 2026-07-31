@@ -1392,6 +1392,56 @@
       font-size: 9px;
       color: var(--text-muted);
     }
+
+    /* ── Agent Runtime v2 ─────────────────────────────────── */
+    .agent-panel-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; height: calc(100% - 45px); }
+    .agent-launch { display: grid; grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 2fr) auto auto; gap: 7px; flex-shrink: 0; }
+    .agent-launch textarea { min-height: 34px; max-height: 76px; resize: vertical; }
+    .agent-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 7px; flex-shrink: 0; }
+    .agent-tab { border: 0; border-radius: 5px; padding: 5px 9px; background: transparent; color: var(--text-dim); font: 500 10px var(--font); cursor: pointer; }
+    .agent-tab:hover { color: var(--text); background: rgba(148,163,184,0.07); }
+    .agent-tab.active { color: var(--accent); background: var(--accent-dim); }
+    .agent-view { display: none; flex: 1; min-height: 0; overflow: hidden; }
+    .agent-view.active { display: flex; }
+    .agent-split { display: grid; grid-template-columns: minmax(170px, 0.85fr) minmax(260px, 1.55fr); gap: 9px; width: 100%; min-height: 0; }
+    .agent-card { border: 1px solid var(--border); background: rgba(15,23,42,0.26); border-radius: 7px; padding: 9px; min-height: 0; overflow: auto; }
+    .agent-card-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--text); font-size: 10px; font-weight: 600; margin-bottom: 7px; }
+    .agent-muted { color: var(--text-muted); font-size: 9px; line-height: 1.45; }
+    .agent-row { display: flex; align-items: center; gap: 7px; padding: 6px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; color: var(--text-dim); font-size: 9px; }
+    .agent-row:hover, .agent-row.selected { background: rgba(168,139,250,0.08); border-color: rgba(168,139,250,0.14); }
+    .agent-row-main { min-width: 0; flex: 1; }
+    .agent-row-title { color: var(--text); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .agent-status { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--text-muted); }
+    .agent-status.running { background: #60a5fa; box-shadow: 0 0 5px #60a5fa; }
+    .agent-status.queued { background: #fbbf24; }
+    .agent-status.waiting_approval { background: #facc15; box-shadow: 0 0 5px #facc15; }
+    .agent-status.completed { background: var(--green); }
+    .agent-status.failed { background: #f87171; }
+    .agent-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .agent-toolbar .settings-reset-btn { color: var(--text-dim); border-color: var(--border); }
+    .agent-toolbar .primary { color: var(--accent); border-color: rgba(168,139,250,0.25); background: var(--accent-dim); }
+    .agent-toolbar .danger { color: #f87171; border-color: rgba(248,113,113,0.2); }
+    .agent-event { border-left: 2px solid var(--border); padding: 4px 7px; margin: 4px 0; color: var(--text-dim); font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .agent-event-time { color: var(--text-muted); margin-right: 6px; }
+    .agent-form-grid { display: grid; grid-template-columns: minmax(190px, 0.8fr) minmax(260px, 1.4fr); gap: 9px; width: 100%; min-height: 0; }
+    .agent-field { margin-bottom: 9px; }
+    .agent-field label { display: block; color: var(--text-dim); font-size: 9px; margin-bottom: 4px; }
+    .agent-field textarea { width: 100%; min-height: 110px; resize: vertical; font: 9px/1.45 var(--font); }
+    .agent-field-row { display: flex; align-items: center; gap: 7px; }
+    .agent-list-empty { color: var(--text-muted); font-size: 9px; padding: 12px 6px; text-align: center; }
+    .agent-fact { border-bottom: 1px solid var(--border); padding: 7px 2px; }
+    .agent-fact:last-child { border-bottom: 0; }
+    .agent-fact-text { color: var(--text-dim); font-size: 9px; line-height: 1.45; user-select: text; }
+    .agent-badge { display: inline-block; border-radius: 999px; padding: 1px 5px; background: var(--accent-dim); color: var(--accent); font-size: 8px; }
+    .agent-automation { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 7px; }
+    .agent-automation-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+    .agent-automation-actions { display: flex; gap: 5px; margin-left: auto; }
+    #agent-activity { user-select: text; }
+    @media (max-width: 520px) {
+      .agent-launch { grid-template-columns: 1fr auto auto; }
+      .agent-launch textarea { grid-column: 1 / -1; grid-row: 2; }
+      .agent-split, .agent-form-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -1789,7 +1839,7 @@
           <div class="setting-row">
             <div>
               <div class="setting-label">Default approval mode</div>
-              <div class="setting-hint">How much autonomy agents get by default</div>
+              <div class="setting-hint">Default for no-project runs; project agents start at ask-first</div>
             </div>
             <select class="setting-input" id="set-agent-approval-mode">
               <option value="suggest-only">Suggest Only</option>
@@ -1922,27 +1972,92 @@
     <div id="plugin-panel-container" style="display:none;"></div>
 
     <!-- Agent panel overlay -->
-    <div id="agent-overlay" style="display:none;position:absolute;inset:0;background:var(--bg);z-index:80;overflow-y:auto;">
+    <div id="agent-overlay" style="display:none;position:absolute;inset:0;background:var(--bg);z-index:80;overflow:hidden;">
       <div class="settings-header">
         <h2>Agents</h2>
         <button class="settings-close" id="btn-agent-close">&#x2715;</button>
       </div>
-      <div style="padding:12px;">
-        <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <div class="agent-panel-body">
+        <div class="agent-launch">
           <select id="agent-selector" class="setting-input" style="flex:1;"></select>
+          <textarea id="agent-task-input" class="setting-input" placeholder="Describe the task..."></textarea>
           <button class="settings-reset-btn" id="btn-agent-run" style="background:var(--accent-dim);color:var(--accent);">Run</button>
           <button class="settings-reset-btn" id="btn-agent-stop" style="display:none;color:#f87171;">Stop</button>
         </div>
-        <textarea id="agent-task-input" class="setting-input" placeholder="Describe the task..." style="width:100%;height:60px;resize:vertical;font-size:12px;font-family:inherit;box-sizing:border-box;"></textarea>
-        <!-- Agent tree visualization -->
-        <div id="agent-tree" style="margin-top:12px;display:none;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-            <span style="font-size:11px;font-weight:600;color:var(--text);">Agent Tree</span>
-            <button class="settings-reset-btn" id="btn-agent-tree-refresh" style="font-size:10px;padding:2px 8px;">Refresh</button>
-          </div>
-          <div id="agent-tree-content" style="font-size:11px;"></div>
+        <p class="agent-muted">Agent commands run locally with your operating-system permissions. Policy and project boundaries reduce risk, but they are not an OS sandbox.</p>
+        <div class="agent-tabs" role="tablist" aria-label="Agent project controls">
+          <button class="agent-tab active" data-agent-view="runs" role="tab">Runs</button>
+          <button class="agent-tab" data-agent-view="trust" role="tab">Trust &amp; Policy</button>
+          <button class="agent-tab" data-agent-view="memory" role="tab">Memory</button>
+          <button class="agent-tab" data-agent-view="automation" role="tab">Automation</button>
         </div>
-        <div id="agent-activity" style="margin-top:12px;font-size:12px;color:var(--text-dim);max-height:400px;overflow-y:auto;"></div>
+
+        <section class="agent-view active" data-agent-pane="runs">
+          <div class="agent-split">
+            <div class="agent-card">
+              <div class="agent-card-title"><span>Durable runs</span><button class="settings-reset-btn" id="btn-agent-runs-refresh">Refresh</button></div>
+              <div id="agent-run-list" class="agent-list-empty">No runs for this project.</div>
+            </div>
+            <div class="agent-card">
+              <div class="agent-card-title"><span id="agent-run-detail-title">Run detail</span><span id="agent-run-detail-status" class="agent-badge">Select a run</span></div>
+              <div class="agent-toolbar">
+                <button class="settings-reset-btn primary" id="btn-agent-run-retry" style="display:none;">Retry</button>
+                <button class="settings-reset-btn danger" id="btn-agent-run-cancel" style="display:none;">Cancel</button>
+                <button class="settings-reset-btn primary" id="btn-agent-run-approve" style="display:none;">Approve pending</button>
+                <button class="settings-reset-btn danger" id="btn-agent-run-reject" style="display:none;">Reject pending</button>
+                <button class="settings-reset-btn" id="btn-agent-tree-refresh">Refresh tree</button>
+              </div>
+              <div id="agent-tree" style="display:none;margin-bottom:8px;">
+                <div id="agent-tree-content" style="font-size:11px;"></div>
+              </div>
+              <div id="agent-run-events" class="agent-list-empty">Redacted audit events appear here.</div>
+              <div id="agent-activity" style="margin-top:8px;font-size:10px;color:var(--text-dim);max-height:140px;overflow:auto;"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="agent-view" data-agent-pane="trust">
+          <div class="agent-form-grid">
+            <div class="agent-card">
+              <div class="agent-card-title">Project agent trust</div>
+              <div class="agent-field"><label for="agent-trust-mode">Selected agent</label><select id="agent-trust-mode" class="setting-input"><option value="suggest-only">Suggest only</option><option value="ask-first">Ask first</option><option value="auto-execute">Auto execute</option></select></div>
+              <button class="settings-reset-btn" id="btn-agent-trust-save">Save project trust</button>
+              <p class="agent-muted" style="margin-top:8px;">Trust is scoped to this project and agent. The immutable command-policy floor always applies.</p>
+              <div class="agent-card-title" style="margin-top:14px;">Repository rules <span class="agent-badge">read-only</span></div>
+              <pre id="agent-repository-policy" class="agent-muted" style="white-space:pre-wrap;user-select:text;">[]</pre>
+            </div>
+            <div class="agent-card">
+              <div class="agent-card-title">User-owned project policy</div>
+              <div class="agent-field"><label for="agent-project-policy">Rules (JSON)</label><textarea id="agent-project-policy" class="setting-input" spellcheck="false">[]</textarea></div>
+              <div class="agent-field"><label for="agent-approved-env">Approved environment names (comma-separated)</label><input id="agent-approved-env" class="setting-input" placeholder="PROJECT_MODE, NODE_ENV"></div>
+              <button class="settings-reset-btn" id="btn-agent-policy-save">Validate &amp; save</button>
+              <p id="agent-policy-revision" class="agent-muted" style="margin-top:7px;"></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="agent-view" data-agent-pane="memory">
+          <div class="agent-form-grid">
+            <div class="agent-card">
+              <div class="agent-card-title"><span>Project memory</span><div class="setting-toggle" id="agent-memory-enabled" role="switch" aria-label="Enable project memory"><div class="setting-toggle-knob"></div></div></div>
+              <p class="agent-muted">Disabled by default. Enabled memory is recalled as provenance-labelled, untrusted data and captured after successful top-level runs.</p>
+              <div class="agent-field" style="margin-top:9px;"><label for="agent-memory-search">Search facts</label><input id="agent-memory-search" class="setting-input" placeholder="Search project facts"></div>
+              <div id="agent-memory-list" class="agent-list-empty">Memory is disabled.</div>
+            </div>
+            <div class="agent-card">
+              <div class="agent-card-title"><span>Revision history</span><button class="settings-reset-btn" id="btn-agent-memory-refresh">Refresh</button></div>
+              <div id="agent-memory-history" class="agent-list-empty">No revisions.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="agent-view" data-agent-pane="automation">
+          <div class="agent-card" style="width:100%;">
+            <div class="agent-card-title"><span>Discovered project triggers</span><button class="settings-reset-btn" id="btn-agent-automation-refresh">Refresh</button></div>
+            <p class="agent-muted" style="margin-bottom:8px;">Each trigger is a proposal until separately enabled. Automation runs only while Wotch is open.</p>
+            <div id="agent-automation-list" class="agent-list-empty">No automation triggers discovered.</div>
+          </div>
+        </section>
       </div>
     </div>
 

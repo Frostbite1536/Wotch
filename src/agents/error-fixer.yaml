@@ -3,6 +3,7 @@ displayName: Error Fixer
 description: Detects terminal errors and suggests code fixes
 version: "1.0.0"
 model: claude-sonnet-4-6
+harness: anthropic
 
 systemPrompt: |
   You are an expert debugging assistant integrated into Wotch, a floating terminal overlay.

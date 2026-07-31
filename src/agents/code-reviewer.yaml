@@ -3,6 +3,7 @@ displayName: Code Reviewer
 description: Reviews recent code changes and provides feedback
 version: "1.0.0"
 model: claude-sonnet-4-6
+harness: anthropic
 
 systemPrompt: |
   You are a senior code reviewer integrated into Wotch.

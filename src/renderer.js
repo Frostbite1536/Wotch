@@ -1109,6 +1109,11 @@ const btnApiShowToken = document.getElementById("btn-api-show-token");
 const btnApiCopyToken = document.getElementById("btn-api-copy-token");
 const btnApiRegenToken = document.getElementById("btn-api-regen-token");
 const apiStatusInfo = document.getElementById("api-status-info");
+// Agent runtime settings (dedicated validated IPC)
+const setAgentsEnabled = document.getElementById("set-agents-enabled");
+const setAgentApprovalMode = document.getElementById("set-agent-approval-mode");
+const setAgentMaxConcurrent = document.getElementById("set-agent-max-concurrent");
+const setAgentAutoTrigger = document.getElementById("set-agent-auto-trigger");
 
 let integrationPollTimer = null;
 
@@ -1219,6 +1224,13 @@ async function loadSettingsUI() {
     checkApiKeyStatus();
     refreshUsageDisplay();
     refreshIntegrationStatus();
+    if (window.wotch.agentSettingsGet) {
+      const agentSettings = await window.wotch.agentSettingsGet();
+      setAgentsEnabled?.classList.toggle("on", agentSettings.enabled !== false);
+      if (setAgentApprovalMode) setAgentApprovalMode.value = agentSettings.defaultApprovalMode || "ask-first";
+      if (setAgentMaxConcurrent) setAgentMaxConcurrent.value = agentSettings.maxConcurrentAgents || 3;
+      setAgentAutoTrigger?.classList.toggle("on", agentSettings.autoTriggerEnabled !== false);
+    }
   } catch { /* ignore */ }
 }
 
@@ -1304,6 +1316,22 @@ if (setMcpEnabled) {
     debouncedSave();
   });
 }
+async function saveAgentSettingsUI() {
+  if (!window.wotch.agentSettingsUpdate) return;
+  try {
+    await window.wotch.agentSettingsUpdate({
+      enabled: setAgentsEnabled?.classList.contains("on") ?? true,
+      defaultApprovalMode: setAgentApprovalMode?.value || "ask-first",
+      maxConcurrentAgents: parseInt(setAgentMaxConcurrent?.value, 10) || 3,
+      autoTriggerEnabled: setAgentAutoTrigger?.classList.contains("on") ?? true,
+    });
+  } catch (error) { showToast(`Agent settings: ${error.message}`, "error"); }
+}
+for (const toggle of [setAgentsEnabled, setAgentAutoTrigger]) {
+  toggle?.addEventListener("click", () => { toggle.classList.toggle("on"); saveAgentSettingsUI(); });
+}
+setAgentApprovalMode?.addEventListener("change", saveAgentSettingsUI);
+setAgentMaxConcurrent?.addEventListener("change", saveAgentSettingsUI);
 if (btnReconfigureHooks) {
   btnReconfigureHooks.addEventListener("click", async () => {
     const result = await window.wotch.configureHooks();
@@ -2865,6 +2893,7 @@ function openAgentPanel() {
   if (agentOverlay) agentOverlay.style.display = "";
   loadAgentList();
   renderAgentTree();
+  refreshAgentWorkspace();
 }
 
 function closeAgentPanel() {
@@ -2874,7 +2903,7 @@ function closeAgentPanel() {
 
 async function loadAgentList() {
   try {
-    const agents = await window.wotch.listAgents();
+    const agents = await window.wotch.listAgents(currentProject?.path);
     if (agentSelector) {
       agentSelector.innerHTML = agents.map(a =>
         `<option value="${escapeHtml(a.id)}">${escapeHtml(a.displayName)} (${escapeHtml(a.approvalMode)})</option>`
@@ -2898,7 +2927,9 @@ async function runAgent() {
     if (btnAgentRun) btnAgentRun.style.display = "none";
     if (btnAgentStop) btnAgentStop.style.display = "";
 
-    const result = await window.wotch.startAgent(agentId, { task, projectPath: currentProject?.path });
+    const result = window.wotch.agentRunStart
+      ? await window.wotch.agentRunStart(agentId, { task, projectPath: currentProject?.path })
+      : await window.wotch.startAgent(agentId, { task, projectPath: currentProject?.path });
     currentAgentRunId = result.runId;
   } catch (err) {
     showToast(`Agent failed: ${err.message}`, "error");
@@ -3116,13 +3147,160 @@ function renderTreeNode(node, indent) {
 function showApprovalDialog(data) {
   pendingApproval = { runId: data.runId, actionId: data.actionId };
   if (agentApprovalTool) agentApprovalTool.textContent = data.tool;
-  if (agentApprovalInput) agentApprovalInput.textContent = JSON.stringify(data.input, null, 2);
+  if (agentApprovalInput) agentApprovalInput.textContent = JSON.stringify(data.input || {
+    path: data.path, cwd: data.cwd, commandPreview: data.commandPreview,
+    byteCount: data.byteCount, sha256: data.sha256, policy: data.policy,
+  }, null, 2);
   if (agentApprovalOverlay) agentApprovalOverlay.style.display = "flex";
 }
 
 function hideApprovalDialog() {
   pendingApproval = null;
   if (agentApprovalOverlay) agentApprovalOverlay.style.display = "none";
+}
+
+// ── Durable run, trust, memory, and automation controls ───────
+let selectedAgentRunId = null;
+let selectedRunPendingApproval = null;
+let currentMemoryVersion = 0;
+let agentRefreshTimer = null;
+
+const agentProjectPath = () => currentProject?.path || "";
+const agentRunList = document.getElementById("agent-run-list");
+const agentRunEvents = document.getElementById("agent-run-events");
+const agentRunDetailTitle = document.getElementById("agent-run-detail-title");
+const agentRunDetailStatus = document.getElementById("agent-run-detail-status");
+const btnAgentRunRetry = document.getElementById("btn-agent-run-retry");
+const btnAgentRunCancel = document.getElementById("btn-agent-run-cancel");
+const btnAgentRunApprove = document.getElementById("btn-agent-run-approve");
+const btnAgentRunReject = document.getElementById("btn-agent-run-reject");
+const agentTrustMode = document.getElementById("agent-trust-mode");
+const agentRepositoryPolicy = document.getElementById("agent-repository-policy");
+const agentProjectPolicy = document.getElementById("agent-project-policy");
+const agentApprovedEnv = document.getElementById("agent-approved-env");
+const agentPolicyRevision = document.getElementById("agent-policy-revision");
+const agentMemoryEnabled = document.getElementById("agent-memory-enabled");
+const agentMemorySearch = document.getElementById("agent-memory-search");
+const agentMemoryList = document.getElementById("agent-memory-list");
+const agentMemoryHistory = document.getElementById("agent-memory-history");
+const agentAutomationList = document.getElementById("agent-automation-list");
+
+function shortRunId(runId) { return String(runId || "").slice(0, 8); }
+function formatAgentTime(value) {
+  if (!value) return "—";
+  try { return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return value; }
+}
+
+async function refreshAgentWorkspace() {
+  await Promise.allSettled([refreshAgentRuns(), refreshAgentTrustPolicy(), refreshAgentMemory(), refreshAgentAutomation()]);
+}
+
+function scheduleAgentWorkspaceRefresh() {
+  clearTimeout(agentRefreshTimer);
+  agentRefreshTimer = setTimeout(() => { if (agentPanelOpen) refreshAgentRuns(); }, 150);
+}
+
+async function refreshAgentRuns() {
+  if (!window.wotch.agentRunsList) return;
+  try {
+    const runs = await window.wotch.agentRunsList(agentProjectPath(), 200);
+    if (!selectedAgentRunId && runs.length) selectedAgentRunId = runs[0].runId;
+    if (selectedAgentRunId && !runs.some((run) => run.runId === selectedAgentRunId)) selectedAgentRunId = runs[0]?.runId || null;
+    if (agentRunList) {
+      agentRunList.className = runs.length ? "" : "agent-list-empty";
+      agentRunList.innerHTML = runs.length ? runs.map((run) => `
+        <div class="agent-row ${run.runId === selectedAgentRunId ? "selected" : ""}" data-agent-run-id="${escapeHtml(run.runId)}">
+          <span class="agent-status ${escapeHtml(run.status)}"></span>
+          <div class="agent-row-main"><div class="agent-row-title">${escapeHtml(run.agentName || run.agentId)}</div><div class="agent-muted">${escapeHtml(shortRunId(run.runId))} · ${escapeHtml(run.status.replace("_", " "))} · ${escapeHtml(formatAgentTime(run.createdAt))}</div></div>
+        </div>`).join("") : "No runs for this project.";
+    }
+    const selected = runs.find((run) => run.runId === selectedAgentRunId);
+    await renderAgentRunDetail(selected);
+  } catch (error) {
+    if (agentRunList) agentRunList.textContent = `Unable to load runs: ${error.message}`;
+  }
+}
+
+async function renderAgentRunDetail(run) {
+  if (!run) {
+    if (agentRunDetailTitle) agentRunDetailTitle.textContent = "Run detail";
+    if (agentRunDetailStatus) agentRunDetailStatus.textContent = "Select a run";
+    if (agentRunEvents) agentRunEvents.textContent = "Redacted audit events appear here.";
+    if (btnAgentRunRetry) btnAgentRunRetry.style.display = "none";
+    if (btnAgentRunCancel) btnAgentRunCancel.style.display = "none";
+    if (btnAgentRunApprove) btnAgentRunApprove.style.display = "none";
+    if (btnAgentRunReject) btnAgentRunReject.style.display = "none";
+    selectedRunPendingApproval = null;
+    return;
+  }
+  if (agentRunDetailTitle) agentRunDetailTitle.textContent = `${run.agentName || run.agentId} · ${shortRunId(run.runId)}`;
+  if (agentRunDetailStatus) agentRunDetailStatus.textContent = `${run.status.replace("_", " ")} · ${run.iteration || 0}/${run.maxTurns || "?"} turns · ${run.tokenTotal || 0} tokens`;
+  const active = ["queued", "running", "waiting_approval"].includes(run.status);
+  if (btnAgentRunCancel) btnAgentRunCancel.style.display = active ? "" : "none";
+  if (btnAgentRunRetry) btnAgentRunRetry.style.display = run.status === "interrupted" ? "" : "none";
+  selectedRunPendingApproval = run.pendingApproval || null;
+  if (btnAgentRunApprove) btnAgentRunApprove.style.display = run.status === "waiting_approval" ? "" : "none";
+  if (btnAgentRunReject) btnAgentRunReject.style.display = run.status === "waiting_approval" ? "" : "none";
+  try {
+    const events = await window.wotch.agentRunEvents(run.runId);
+    if (agentRunEvents) {
+      agentRunEvents.className = events.length ? "" : "agent-list-empty";
+      agentRunEvents.innerHTML = events.length ? events.slice(-100).map((event) => `<div class="agent-event"><span class="agent-event-time">${escapeHtml(formatAgentTime(event.timestamp))}</span><span class="agent-badge">${escapeHtml(event.type)}</span> ${escapeHtml(JSON.stringify(event.data || {}))}</div>`).join("") : "No audit events.";
+    }
+  } catch (error) { if (agentRunEvents) agentRunEvents.textContent = error.message; }
+}
+
+async function refreshAgentTrustPolicy() {
+  const projectPath = agentProjectPath();
+  const agentId = agentSelector?.value;
+  if (!projectPath || !agentId || !window.wotch.agentTrustGet) return;
+  try {
+    const [trust, policy] = await Promise.all([window.wotch.agentTrustGet(projectPath, agentId), window.wotch.agentPolicyGet(projectPath)]);
+    if (agentTrustMode) agentTrustMode.value = trust.mode;
+    if (agentRepositoryPolicy) agentRepositoryPolicy.textContent = JSON.stringify(policy.repositoryRules || [], null, 2);
+    if (agentProjectPolicy && document.activeElement !== agentProjectPolicy) agentProjectPolicy.value = JSON.stringify(policy.projectRules || [], null, 2);
+    if (agentApprovedEnv && document.activeElement !== agentApprovedEnv) agentApprovedEnv.value = (policy.approvedEnv || []).join(", ");
+    if (agentPolicyRevision) agentPolicyRevision.textContent = `Policy revision ${policy.revision}. Repository rules cannot weaken the immutable floor.`;
+  } catch (error) { if (agentPolicyRevision) agentPolicyRevision.textContent = error.message; }
+}
+
+async function refreshAgentMemory() {
+  const projectPath = agentProjectPath();
+  if (!projectPath || !window.wotch.agentMemoryStatus) return;
+  try {
+    const [status, facts, history] = await Promise.all([
+      window.wotch.agentMemoryStatus(projectPath),
+      window.wotch.agentMemoryList(projectPath, agentMemorySearch?.value || ""),
+      window.wotch.agentMemoryHistory(projectPath),
+    ]);
+    currentMemoryVersion = status.version;
+    agentMemoryEnabled?.classList.toggle("on", status.enabled);
+    if (agentMemoryList) {
+      agentMemoryList.className = facts.length ? "" : "agent-list-empty";
+      agentMemoryList.innerHTML = facts.length ? facts.map((fact) => `<div class="agent-fact"><div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;"><span class="agent-badge">${escapeHtml(fact.category)}</span><span class="agent-muted">${escapeHtml(formatAgentTime(fact.createdAt))}</span><button class="settings-reset-btn agent-memory-delete" data-fact-id="${escapeHtml(fact.id)}" style="margin-left:auto;">Delete</button></div><div class="agent-fact-text">${escapeHtml(fact.fact)}</div></div>`).join("") : (status.enabled ? "No matching facts." : "Memory is disabled.");
+    }
+    if (agentMemoryHistory) {
+      agentMemoryHistory.className = history.length ? "" : "agent-list-empty";
+      agentMemoryHistory.innerHTML = history.length ? history.map((revision) => `<div class="agent-row"><div class="agent-row-main"><div class="agent-row-title">Revision ${revision.version}</div><div class="agent-muted">${revision.factCount} facts · ${escapeHtml(formatAgentTime(revision.updatedAt))}</div></div><button class="settings-reset-btn agent-memory-restore" data-version="${revision.version}">Restore</button></div>`).join("") : "No revisions.";
+    }
+  } catch (error) { if (agentMemoryList) agentMemoryList.textContent = error.message; }
+}
+
+function describeAutomationTrigger(trigger) {
+  if (trigger.type === "cron") return `${trigger.schedule}${trigger.timezone ? ` · ${trigger.timezone}` : ""}`;
+  if (trigger.type === "fileWatch") return trigger.globs.join(", ");
+  return `${trigger.command} · every ${trigger.intervalSeconds}s · compare ${trigger.compare}`;
+}
+
+async function refreshAgentAutomation() {
+  const projectPath = agentProjectPath();
+  if (!projectPath || !window.wotch.agentAutomationList) return;
+  try {
+    const triggers = await window.wotch.agentAutomationList(projectPath);
+    if (!agentAutomationList) return;
+    agentAutomationList.className = triggers.length ? "" : "agent-list-empty";
+    agentAutomationList.innerHTML = triggers.length ? triggers.map((item) => `<div class="agent-automation"><div class="agent-automation-head"><span class="agent-status ${item.enabled ? "completed" : ""}"></span><strong style="font-size:10px;color:var(--text);">${escapeHtml(item.agentName)} · ${escapeHtml(item.trigger.id)}</strong><span class="agent-badge">${escapeHtml(item.trigger.type)}</span><div class="agent-automation-actions"><button class="settings-reset-btn agent-automation-now" data-agent-id="${escapeHtml(item.agentId)}" data-trigger-id="${escapeHtml(item.trigger.id)}" ${item.enabled ? "" : "disabled"}>Run now</button><button class="settings-reset-btn ${item.enabled ? "danger agent-automation-disable" : "primary agent-automation-enable"}" data-agent-id="${escapeHtml(item.agentId)}" data-trigger-id="${escapeHtml(item.trigger.id)}">${item.enabled ? "Disable" : "Enable"}</button></div></div><div class="agent-muted">${escapeHtml(describeAutomationTrigger(item.trigger))}</div><div class="agent-muted">Last: ${escapeHtml(formatAgentTime(item.lastRun))} · Next: ${escapeHtml(formatAgentTime(item.nextRun))}${item.error ? ` · Error: ${escapeHtml(item.error)}` : ""}</div></div>`).join("") : "No automation triggers discovered.";
+  } catch (error) { if (agentAutomationList) agentAutomationList.textContent = error.message; }
 }
 
 function initAgentListeners() {
@@ -3137,17 +3315,17 @@ function initAgentListeners() {
         appendAgentActivity(`<span style="color:var(--text-dim);">${escapeHtml(event.data.text)}</span>`);
         break;
       case "tool-call":
-        appendAgentActivity(renderToolCallRich(event.data.tool, event.data.input || {}));
+        appendAgentActivity(renderToolCallRich(event.data.tool, event.data));
         break;
       case "tool-result":
-        appendAgentActivity(renderToolResultRich(event.data.tool, event.data.output || "", event.data.durationMs));
+        appendAgentActivity(`<span style="color:var(--text-dim);">${escapeHtml(event.data.tool)} · ${escapeHtml(JSON.stringify(event.data))}</span>`);
         break;
       case "error":
         appendAgentActivity(`<span style="color:#f87171;">Error: ${escapeHtml(event.data.message)}</span>`);
         break;
       case "completed":
         appendAgentActivity(`<span style="color:var(--green);">Completed (${event.data.turnsUsed} turns)</span>`);
-        if (!event.parentRunId) {
+        if (event.runId === currentAgentRunId) {
           if (btnAgentRun) btnAgentRun.style.display = "";
           if (btnAgentStop) btnAgentStop.style.display = "none";
           currentAgentRunId = null;
@@ -3156,7 +3334,15 @@ function initAgentListeners() {
         break;
       case "stopped":
         appendAgentActivity(`<span style="color:var(--text-muted);">Stopped: ${escapeHtml(event.data.reason)}</span>`);
-        if (!event.parentRunId) {
+        if (event.runId === currentAgentRunId) {
+          if (btnAgentRun) btnAgentRun.style.display = "";
+          if (btnAgentStop) btnAgentStop.style.display = "none";
+          currentAgentRunId = null;
+        }
+        renderAgentTree();
+        break;
+      case "failed":
+        if (event.runId === currentAgentRunId) {
           if (btnAgentRun) btnAgentRun.style.display = "";
           if (btnAgentStop) btnAgentStop.style.display = "none";
           currentAgentRunId = null;
@@ -3164,6 +3350,7 @@ function initAgentListeners() {
         renderAgentTree();
         break;
     }
+    scheduleAgentWorkspaceRefresh();
   });
 
   // Approval requests
@@ -3180,6 +3367,95 @@ function initAgentListeners() {
   if (btnAgentRun) btnAgentRun.addEventListener("click", runAgent);
   if (btnAgentStop) btnAgentStop.addEventListener("click", stopAgent);
   if (btnAgentClose) btnAgentClose.addEventListener("click", closeAgentPanel);
+  agentSelector?.addEventListener("change", () => { refreshAgentTrustPolicy(); refreshAgentAutomation(); });
+
+  document.querySelectorAll(".agent-tab").forEach((tab) => tab.addEventListener("click", () => {
+    document.querySelectorAll(".agent-tab").forEach((item) => item.classList.toggle("active", item === tab));
+    document.querySelectorAll(".agent-view").forEach((pane) => pane.classList.toggle("active", pane.dataset.agentPane === tab.dataset.agentView));
+    if (tab.dataset.agentView === "runs") refreshAgentRuns();
+    if (tab.dataset.agentView === "trust") refreshAgentTrustPolicy();
+    if (tab.dataset.agentView === "memory") refreshAgentMemory();
+    if (tab.dataset.agentView === "automation") refreshAgentAutomation();
+  }));
+  document.getElementById("btn-agent-runs-refresh")?.addEventListener("click", refreshAgentRuns);
+  agentRunList?.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-agent-run-id]");
+    if (row) { selectedAgentRunId = row.dataset.agentRunId; refreshAgentRuns(); }
+  });
+  btnAgentRunCancel?.addEventListener("click", async () => {
+    if (!selectedAgentRunId) return;
+    await window.wotch.agentRunStop(selectedAgentRunId); refreshAgentRuns();
+  });
+  btnAgentRunRetry?.addEventListener("click", async () => {
+    if (!selectedAgentRunId) return;
+    try {
+      const result = await window.wotch.agentRunRetry(selectedAgentRunId);
+      selectedAgentRunId = result.runId; refreshAgentRuns();
+    } catch (error) { showToast(error.message, "error"); }
+  });
+  btnAgentRunApprove?.addEventListener("click", async () => {
+    if (!selectedAgentRunId || !selectedRunPendingApproval) return;
+    await window.wotch.agentRunApprove(selectedAgentRunId, selectedRunPendingApproval.actionId); refreshAgentRuns();
+  });
+  btnAgentRunReject?.addEventListener("click", async () => {
+    if (!selectedAgentRunId || !selectedRunPendingApproval) return;
+    await window.wotch.agentRunReject(selectedAgentRunId, selectedRunPendingApproval.actionId); refreshAgentRuns();
+  });
+
+  document.getElementById("btn-agent-trust-save")?.addEventListener("click", async () => {
+    if (!agentProjectPath() || !agentSelector?.value) return showToast("Open a project to set trust", "error");
+    try { await window.wotch.agentTrustUpdate(agentProjectPath(), agentSelector.value, agentTrustMode.value); showToast("Project trust saved", "success"); await loadAgentList(); }
+    catch (error) { showToast(error.message, "error"); }
+  });
+  document.getElementById("btn-agent-policy-save")?.addEventListener("click", async () => {
+    if (!agentProjectPath()) return showToast("Open a project to edit policy", "error");
+    try {
+      const rules = JSON.parse(agentProjectPolicy.value || "[]");
+      const approvedEnv = (agentApprovedEnv.value || "").split(",").map((name) => name.trim()).filter(Boolean);
+      await window.wotch.agentPolicyUpdate(agentProjectPath(), { rules, approvedEnv });
+      showToast("Project policy saved", "success"); refreshAgentTrustPolicy(); refreshAgentAutomation();
+    } catch (error) { showToast(`Policy not saved: ${error.message}`, "error"); }
+  });
+
+  agentMemoryEnabled?.addEventListener("click", async () => {
+    if (!agentProjectPath()) return showToast("Open a project to use memory", "error");
+    try { await window.wotch.agentMemoryEnable(agentProjectPath(), !agentMemoryEnabled.classList.contains("on")); refreshAgentMemory(); }
+    catch (error) { showToast(error.message, "error"); }
+  });
+  let memorySearchTimer;
+  agentMemorySearch?.addEventListener("input", () => { clearTimeout(memorySearchTimer); memorySearchTimer = setTimeout(refreshAgentMemory, 200); });
+  document.getElementById("btn-agent-memory-refresh")?.addEventListener("click", refreshAgentMemory);
+  agentMemoryList?.addEventListener("click", async (event) => {
+    const button = event.target.closest(".agent-memory-delete");
+    if (!button) return;
+    try { await window.wotch.agentMemoryDelete(agentProjectPath(), button.dataset.factId); refreshAgentMemory(); }
+    catch (error) { showToast(error.message, "error"); }
+  });
+  agentMemoryHistory?.addEventListener("click", async (event) => {
+    const button = event.target.closest(".agent-memory-restore");
+    if (!button) return;
+    try { await window.wotch.agentMemoryRestore(agentProjectPath(), Number(button.dataset.version), currentMemoryVersion); showToast("Memory revision restored", "success"); refreshAgentMemory(); }
+    catch (error) { showToast(error.message, "error"); }
+  });
+
+  document.getElementById("btn-agent-automation-refresh")?.addEventListener("click", refreshAgentAutomation);
+  agentAutomationList?.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-agent-id][data-trigger-id]");
+    if (!button) return;
+    const { agentId, triggerId } = button.dataset;
+    try {
+      if (button.classList.contains("agent-automation-disable")) await window.wotch.agentAutomationDisable(agentProjectPath(), agentId, triggerId);
+      else if (button.classList.contains("agent-automation-now")) await window.wotch.agentAutomationRunNow(agentProjectPath(), agentId, triggerId);
+      else {
+        let result = await window.wotch.agentAutomationEnable(agentProjectPath(), agentId, triggerId, false);
+        if (result.requiresApproval) {
+          const approved = window.confirm(`Enable this command watch while Wotch is open?\n\n${result.commandPreview}\n\n${result.policy.reason}`);
+          if (approved) result = await window.wotch.agentAutomationEnable(agentProjectPath(), agentId, triggerId, true, result.approvalToken);
+        }
+      }
+      refreshAgentAutomation(); refreshAgentRuns();
+    } catch (error) { showToast(error.message, "error"); }
+  });
 
   document.getElementById("btn-agent-approve")?.addEventListener("click", () => {
     if (pendingApproval) {

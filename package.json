@@ -4,6 +4,11 @@
   "description": "Wotch — the notch, for those without. A floating terminal for Claude Code (Windows, Linux, macOS)",
   "author": "Frostbite1536 <frostbite1536@users.noreply.github.com>",
   "main": "src/main.js",
+  "engines": {
+    "node": "24.11.1",
+    "npm": "11.10.0"
+  },
+  "packageManager": "npm@11.10.0",
   "scripts": {
     "start": "electron .",
     "rebuild": "electron-rebuild",
@@ -57,10 +62,14 @@
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
+    "chokidar": "4.0.3",
+    "croner": "10.0.1",
     "electron-updater": "^6.8.9",
     "node-pty": "^1.0.0",
+    "picomatch": "4.0.3",
     "ssh2": "^1.17.0",
     "ws": "^8.21.0",
+    "yaml": "2.8.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
