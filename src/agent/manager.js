@@ -82,7 +82,11 @@ class AgentManager {
     this.redactor = redactor || new Redactor();
     this.projectStore = new ProjectStore({ settingsDir, legacyTrustFile: path.join(settingsDir, "agent-trust.json") });
     this.memoryStore = new ProjectMemoryStore({ projectStore: this.projectStore, redactor: this.redactor });
-    this.runStore = new DurableRunStore({ projectsDir: this.projectStore.projectsDir, redactor: this.redactor, cipher: new CheckpointCipher({ safeStorage }) });
+    this.runStore = new DurableRunStore({
+      projectsDir: this.projectStore.projectsDir,
+      redactor: this.redactor,
+      cipher: new CheckpointCipher({ safeStorage, fallbackKeyFile: path.join(settingsDir, "agent-checkpoint.key") }),
+    });
     this.definitionStore = new AgentDefinitionStore({ bundledDir: bundledAgentsDir, userDir: this.userAgentsDir, logger });
     this.policyEvaluator = new PolicyEvaluator({ redactor: this.redactor });
     this.backend = backend || new LocalPtyExecutionBackend({ pty });

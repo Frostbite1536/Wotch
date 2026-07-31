@@ -83,10 +83,11 @@ function splitExecutableSegments(command, dialect) {
   let quote = null;
   let escaped = false;
   let pipeline = false;
+  const escapeCharacter = dialect === "cmd" ? "^" : dialect === "powershell" ? "`" : "\\";
   for (let index = 0; index < text.length; index++) {
     const char = text[index];
     if (escaped) { current += char; escaped = false; continue; }
-    if (char === "\\" && quote !== "'") { current += char; escaped = true; continue; }
+    if (char === escapeCharacter && quote !== "'") { current += char; escaped = true; continue; }
     if (quote) {
       current += char;
       if (char === quote && !(dialect === "powershell" && text[index + 1] === quote)) quote = null;
@@ -99,7 +100,11 @@ function splitExecutableSegments(command, dialect) {
       if (current.trim()) segments.push({ text: current.trim(), pipeline });
       current = ""; pipeline = false; index++; continue;
     }
-    if (char === ";" || char === "\n" || char === "|") {
+    if (pair === "|&") {
+      if (current.trim()) segments.push({ text: current.trim(), pipeline });
+      current = ""; pipeline = true; index++; continue;
+    }
+    if (char === ";" || char === "\n" || char === "|" || char === "&") {
       if (current.trim()) segments.push({ text: current.trim(), pipeline });
       current = ""; pipeline = char === "|"; continue;
     }
@@ -109,15 +114,16 @@ function splitExecutableSegments(command, dialect) {
   return { segments, ambiguous: Boolean(quote || escaped) };
 }
 
-function tokenize(segment) {
+function tokenize(segment, dialect = "posix") {
   const tokens = [];
   let token = "";
   let quote = null;
   let escaped = false;
+  const escapeCharacter = dialect === "cmd" ? "^" : dialect === "powershell" ? "`" : "\\";
   for (let index = 0; index < segment.length; index++) {
     const char = segment[index];
     if (escaped) { token += char; escaped = false; continue; }
-    if (char === "\\" && quote !== "'") { escaped = true; continue; }
+    if (char === escapeCharacter && quote !== "'") { escaped = true; continue; }
     if (quote) {
       if (char === quote) quote = null;
       else token += char;
@@ -138,7 +144,7 @@ function executableName(token) {
   return String(token || "").replace(/^.*[\\/]/, "").replace(/\.(?:exe|cmd|bat|com)$/i, "").toLowerCase();
 }
 
-function extractSubstitutions(command) {
+function extractSubstitutions(command, dialect) {
   const found = [];
   let quote = null;
   for (let index = 0; index < command.length; index++) {
@@ -146,7 +152,7 @@ function extractSubstitutions(command) {
     if (char === "'" && quote !== '"') { quote = quote === "'" ? null : "'"; continue; }
     if (char === '"' && quote !== "'") { quote = quote === '"' ? null : '"'; continue; }
     if (quote === "'") continue;
-    if (char === "`" && command[index + 1] !== "`") {
+    if (dialect === "posix" && char === "`" && command[index + 1] !== "`") {
       const end = command.indexOf("`", index + 1);
       if (end < 0) return { found, ambiguous: true };
       found.push(command.slice(index + 1, end)); index = end; continue;
@@ -170,10 +176,7 @@ function finding(decision, ruleId, reason, matchedText, dialect) {
 }
 
 function scanSegment(segment, dialect) {
-  const normalizedSegment = dialect === "cmd"
-    ? segment.text.replace(/\^(.)/g, "$1")
-    : dialect === "powershell" ? segment.text.replace(/`(.)/g, "$1") : segment.text;
-  const { tokens, ambiguous } = tokenize(normalizedSegment);
+  const { tokens, ambiguous } = tokenize(segment.text, dialect);
   if (ambiguous || tokens.length === 0) return ambiguous ? finding("require_approval", "floor.ambiguous", "Command quoting could not be parsed safely", segment.text, dialect) : null;
   let offset = 0;
   while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[offset] || "")) offset++;
@@ -250,7 +253,7 @@ function nestedShellPayload(tokens) {
 
 function scanCommand(command, dialect = process.platform === "win32" ? "cmd" : "posix", depth = 0) {
   if (depth > 4) return finding("require_approval", "floor.nested-depth", "Nested shell depth is ambiguous", command, dialect);
-  const substitutions = extractSubstitutions(command);
+  const substitutions = extractSubstitutions(command, dialect);
   if (substitutions.ambiguous) return finding("require_approval", "floor.ambiguous", "Executable substitution could not be parsed", command, dialect);
   for (const nested of substitutions.found) {
     const match = scanCommand(nested, dialect, depth + 1);
@@ -261,7 +264,7 @@ function scanCommand(command, dialect = process.platform === "win32" ? "cmd" : "
   if (split.ambiguous) return finding("require_approval", "floor.ambiguous", "Command quoting could not be parsed safely", command, dialect);
   for (let index = 0; index < split.segments.length; index++) {
     const segment = split.segments[index];
-    const parsed = tokenize(segment.text);
+    const parsed = tokenize(segment.text, dialect);
     if (parsed.ambiguous) return finding("require_approval", "floor.ambiguous", "Command quoting could not be parsed safely", segment.text, dialect);
     const nested = nestedShellPayload(parsed.tokens);
     if (nested?.ambiguous) return finding("require_approval", "floor.encoded-command", "Encoded command could not be decoded safely", segment.text, dialect);
@@ -272,7 +275,7 @@ function scanCommand(command, dialect = process.platform === "win32" ? "cmd" : "
     const current = scanSegment(segment, dialect);
     if (current) return current;
     if (segment.pipeline && index > 0) {
-      const previousExecutable = executableName(tokenize(split.segments[index - 1].text).tokens[0]);
+      const previousExecutable = executableName(tokenize(split.segments[index - 1].text, dialect).tokens[0]);
       const currentExecutable = executableName(parsed.tokens[0]);
       if (["curl", "wget", "invoke-webrequest", "iwr"].includes(previousExecutable) && ["sh", "bash", "zsh", "powershell", "pwsh", "cmd"].includes(currentExecutable)) {
         return finding("require_approval", "floor.pipe-to-shell", "Piping downloaded content to a shell requires approval", `${split.segments[index - 1].text} | ${segment.text}`, dialect);

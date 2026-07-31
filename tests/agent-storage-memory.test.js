@@ -83,6 +83,21 @@ test("durable run store recovers running runs as interrupted and preserves appro
   assert.equal(recovered.length, 2);
 });
 
+test("checkpoint fallback encryption uses a random persistent installation key", (t) => {
+  const root = temp(t); const firstKeyFile = path.join(root, "first", "checkpoint.key"); const secondKeyFile = path.join(root, "second", "checkpoint.key");
+  const first = new CheckpointCipher({ fallbackKeyFile: firstKeyFile });
+  const encrypted = first.encrypt({ task: "private continuation" });
+  assert.doesNotMatch(encrypted, /private continuation/);
+
+  const restarted = new CheckpointCipher({ fallbackKeyFile: firstKeyFile });
+  assert.deepEqual(restarted.decrypt(encrypted), { task: "private continuation" });
+  const otherInstallation = new CheckpointCipher({ fallbackKeyFile: secondKeyFile });
+  assert.throws(() => otherInstallation.decrypt(encrypted), /authenticate|auth/i);
+  assert.notEqual(fs.readFileSync(firstKeyFile, "utf8"), fs.readFileSync(secondKeyFile, "utf8"));
+  if (process.platform !== "win32") assert.equal(fs.statSync(firstKeyFile).mode & 0o077, 0);
+  assert.throws(() => new CheckpointCipher().encrypt({ task: "must fail closed" }), /no installation fallback key/);
+});
+
 test("project trust is scoped and legacy trust migrates only to no-project", (t) => {
   const root = temp(t); const legacy = path.join(root, "agent-trust.json");
   atomicWriteJson(legacy, { reviewer: { mode: "auto-execute", runCount: 9 } });

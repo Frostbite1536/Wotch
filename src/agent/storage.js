@@ -2,7 +2,6 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 
 function normalizePlatformPath(value, platform = process.platform) {
@@ -89,17 +88,31 @@ function readJsonLines(filePath) {
   return values;
 }
 
-function deriveFallbackKey() {
-  let username = process.env.USERNAME || process.env.USER || "unknown-user";
-  try { username = os.userInfo().username || username; } catch { /* restricted runtime */ }
-  const material = [os.hostname(), os.homedir(), username].join("|");
-  return crypto.pbkdf2Sync(material, "wotch-agent-checkpoint-v2", 100000, 32, "sha256");
+function validateFallbackKey(value) {
+  const key = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value || "");
+  if (key.length !== 32) throw new Error("Checkpoint fallback key must be exactly 32 bytes");
+  return key;
+}
+
+function loadOrCreateFallbackKey(filePath) {
+  if (!filePath) throw new Error("Checkpoint fallback key path is required");
+  try {
+    const key = validateFallbackKey(Buffer.from(fs.readFileSync(filePath, "utf8").trim(), "base64"));
+    try { fs.chmodSync(filePath, 0o600); } catch (error) { if (process.platform !== "win32") throw error; }
+    return key;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const key = crypto.randomBytes(32);
+  atomicWriteFile(filePath, `${key.toString("base64")}\n`, { mode: 0o600 });
+  return key;
 }
 
 class CheckpointCipher {
-  constructor({ safeStorage = null, fallbackKey = null } = {}) {
+  constructor({ safeStorage = null, fallbackKey = null, fallbackKeyFile = null } = {}) {
     this.safeStorage = safeStorage;
-    this.fallbackKey = fallbackKey || deriveFallbackKey();
+    this.fallbackKey = fallbackKey ? validateFallbackKey(fallbackKey) : fallbackKeyFile ? loadOrCreateFallbackKey(fallbackKeyFile) : null;
   }
 
   encrypt(value) {
@@ -107,6 +120,7 @@ class CheckpointCipher {
     if (this.safeStorage?.isEncryptionAvailable?.()) {
       return `safe:${this.safeStorage.encryptString(plaintext).toString("base64")}`;
     }
+    if (!this.fallbackKey) throw new Error("OS encryption is unavailable and no installation fallback key is configured");
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv("aes-256-gcm", this.fallbackKey, iv);
     const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
@@ -120,6 +134,7 @@ class CheckpointCipher {
       return JSON.parse(this.safeStorage.decryptString(Buffer.from(encoded.slice(5), "base64")));
     }
     if (!encoded.startsWith("aes:")) throw new Error("Unknown checkpoint format");
+    if (!this.fallbackKey) throw new Error("Checkpoint fallback key is unavailable");
     const data = Buffer.from(encoded.slice(4), "base64");
     const iv = data.subarray(0, 12);
     const tag = data.subarray(12, 28);
@@ -138,6 +153,7 @@ module.exports = {
   canonicalPathSync,
   ensurePrivateDir,
   isContainedPath,
+  loadOrCreateFallbackKey,
   normalizePlatformPath,
   readJson,
   readJsonLines,

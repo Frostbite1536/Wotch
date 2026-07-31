@@ -45,10 +45,25 @@ class AutomationService {
     return { definition, trigger };
   }
 
-  _fingerprint(projectPath, agentId, trigger) {
+  _triggerFingerprint(projectPath, agentId, trigger) {
     const scope = this.projectStore.scope(projectPath);
+    return hash({ scopeId: scope.scopeId, agentId, trigger });
+  }
+
+  _fingerprint(projectPath, agentId, trigger) {
     const policy = this.projectStore.getPolicy(projectPath);
-    return hash({ scopeId: scope.scopeId, agentId, trigger, policyRevision: policy.revision });
+    return hash({ triggerFingerprint: this._triggerFingerprint(projectPath, agentId, trigger), policyRevision: policy.revision });
+  }
+
+  _invalidEnablement(projectPath, agentId, trigger, record) {
+    if (!record?.enabled) return null;
+    if (record.enablementHash !== this._triggerFingerprint(projectPath, agentId, trigger)) {
+      return "Trigger definition changed; explicit re-enable required";
+    }
+    if (trigger.type === "commandWatch" && record.standingApprovalHash !== this._fingerprint(projectPath, agentId, trigger)) {
+      return "Standing approval invalidated by trigger or policy change";
+    }
+    return null;
   }
 
   list(projectPath) {
@@ -61,10 +76,9 @@ class AutomationService {
       for (const trigger of definition.triggers.filter((item) => ["cron", "fileWatch", "commandWatch"].includes(item.type))) {
         const key = this._key(definition.name, trigger.id);
         const record = document.triggers[key] || {};
-        const fingerprint = this._fingerprint(projectPath, definition.name, trigger);
-        const invalidStandingApproval = trigger.type === "commandWatch" && record.enabled && record.standingApprovalHash !== fingerprint;
-        if (invalidStandingApproval) {
-          record.enabled = false; record.error = "Standing approval invalidated by trigger or policy change";
+        const invalidReason = this._invalidEnablement(projectPath, definition.name, trigger, record);
+        if (invalidReason) {
+          record.enabled = false; record.nextRun = null; record.error = invalidReason;
           document.triggers[key] = record; this._deactivate(key); this._save(projectPath, document);
         }
         output.push({ agentId: definition.name, agentName: definition.displayName || definition.name, trigger, enabled: Boolean(record.enabled), nextRun: record.nextRun || null, lastRun: record.lastRun || null, error: record.error || null, consecutiveFailures: record.consecutiveFailures || 0, requiresStandingApproval: trigger.type === "commandWatch" });
@@ -80,7 +94,7 @@ class AutomationService {
     const key = this._key(agentId, triggerId);
     const document = this._load(projectPath);
     const fingerprint = this._fingerprint(projectPath, agentId, trigger);
-    const record = { ...(document.triggers[key] || {}), enabled: true, error: null, consecutiveFailures: 0, enabledAt: this.now().toISOString() };
+    const record = { ...(document.triggers[key] || {}), enabled: true, enablementHash: this._triggerFingerprint(projectPath, agentId, trigger), error: null, consecutiveFailures: 0, enabledAt: this.now().toISOString() };
     if (trigger.type === "commandWatch") {
       const policy = this.projectStore.getPolicy(projectPath);
       const evaluation = this.policyEvaluator.evaluate({ tool: "Shell.execute", input: { command: trigger.command, dialect: trigger.dialect }, trustMode: "auto-execute", ...policy });
@@ -115,10 +129,9 @@ class AutomationService {
 
   async runNow(projectPath, agentId, triggerId) {
     projectPath = this.manager.validateProjectPath?.(projectPath) || projectPath;
-    const { trigger } = this._find(projectPath, agentId, triggerId);
-    const record = this._load(projectPath).triggers[this._key(agentId, triggerId)];
-    if (!record?.enabled) throw new Error("Enable this trigger before running it");
-    return this._enqueue(projectPath, agentId, trigger, "Manual automation run");
+    const item = this.list(projectPath).find((entry) => entry.agentId === agentId && entry.trigger.id === triggerId);
+    if (!item?.enabled) throw new Error("Enable this trigger before running it");
+    return this._enqueue(projectPath, agentId, item.trigger, "Manual automation run");
   }
 
   async restore(projectPath) {
@@ -178,6 +191,11 @@ class AutomationService {
     const record = document.triggers[key];
     if (!record?.enabled) return;
     const currentTrigger = this._find(projectPath, agentId, trigger.id).trigger;
+    if (record.enablementHash !== this._triggerFingerprint(projectPath, agentId, currentTrigger)) {
+      this.disable(projectPath, agentId, trigger.id);
+      this.notify({ message: `Disabled ${trigger.id}: trigger definition changed`, type: "error" });
+      return;
+    }
     if (record.standingApprovalHash !== this._fingerprint(projectPath, agentId, currentTrigger)) {
       this.disable(projectPath, agentId, trigger.id);
       this.notify({ message: `Disabled ${trigger.id}: standing approval changed`, type: "error" });

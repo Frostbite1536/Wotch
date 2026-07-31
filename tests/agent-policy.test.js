@@ -43,6 +43,23 @@ test("nested shells, encoded PowerShell, substitutions, and pipe-to-shell are sc
   assert.equal(scanCommand("powershell -EncodedCommand !!!", "cmd")?.decision, "require_approval");
 });
 
+test("single ampersand chains cannot bypass the immutable floor", () => {
+  const cases = [
+    ["echo ok & format C:", "cmd", "deny"],
+    ["echo ok \\& format C:", "cmd", "deny"],
+    ["echo ok & rm -rf build", "posix", "require_approval"],
+    ["Write-Output ok & Remove-Item -Recurse build", "powershell", "require_approval"],
+  ];
+  for (const [command, dialect, decision] of cases) {
+    assert.equal(scanCommand(command, dialect)?.decision, decision, command);
+  }
+
+  assert.equal(scanCommand("echo ok ^& format C:", "cmd"), null);
+  assert.equal(scanCommand("echo ok \\& rm -rf build", "posix"), null);
+  assert.equal(scanCommand("Write-Output ok `& Remove-Item -Recurse build", "powershell"), null);
+  assert.equal(scanCommand("echo 'ok & rm -rf build'", "posix"), null);
+});
+
 test("quoted and heredoc command text is inert", () => {
   assert.equal(scanCommand("echo \"rm -rf /\"", "posix"), null);
   assert.equal(scanCommand("Write-Output 'Remove-Item -Recurse C:\\\\'", "powershell"), null);

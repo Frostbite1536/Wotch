@@ -130,6 +130,32 @@ test("command watch disables after three consecutive failures", (t) => {
   assert.equal(notifications.length, 1);
 });
 
+test("cron and file watch enablement is invalidated by definition drift", async (t) => {
+  const root = temp(t); const project = path.join(root, "project"); fs.mkdirSync(project);
+  const projectStore = new ProjectStore({ settingsDir: path.join(root, "settings") }); const redactor = new Redactor();
+  const definitions = [
+    { name: "cron-agent", displayName: "Cron", triggers: [{ type: "cron", id: "daily", schedule: "0 9 * * *", task: "Original cron task" }] },
+    { name: "file-agent", displayName: "File", triggers: [{ type: "fileWatch", id: "source", globs: ["src/**/*.js"], ignoredGlobs: [], debounceMs: 100, task: "Original file task" }] },
+  ];
+  const manager = { definitionStore: { list: () => definitions, get: (name) => definitions.find((item) => item.name === name) }, _discover: () => {}, attachAutomation(service) { this.automation = service; }, startAgent: async () => ({ runId: "run" }) };
+  const first = new AutomationService({ manager, projectStore, backend: {}, policyEvaluator: new PolicyEvaluator({ redactor }), redactor });
+  await first.enable(project, "cron-agent", "daily");
+  await first.enable(project, "file-agent", "source");
+  await first.stop();
+
+  definitions[0].triggers[0] = { ...definitions[0].triggers[0], schedule: "0 10 * * *", task: "Changed cron task" };
+  definitions[1].triggers[0] = { ...definitions[1].triggers[0], globs: ["**/*"], task: "Changed file task" };
+  const restored = new AutomationService({ manager, projectStore, backend: {}, policyEvaluator: new PolicyEvaluator({ redactor }), redactor });
+  t.after(() => restored.stop());
+  await restored.restore(project);
+
+  const records = restored.list(project);
+  assert.equal(records.find((item) => item.agentId === "cron-agent").enabled, false);
+  assert.equal(records.find((item) => item.agentId === "file-agent").enabled, false);
+  assert.match(records.find((item) => item.agentId === "cron-agent").error, /explicit re-enable/);
+  assert.match(records.find((item) => item.agentId === "file-agent").error, /explicit re-enable/);
+});
+
 test("cron has no catch-up fire and file watches debounce bursts while ignoring defaults", async (t) => {
   const root = temp(t); const project = path.join(root, "project"); fs.mkdirSync(path.join(project, "src", "nested"), { recursive: true }); fs.mkdirSync(path.join(project, "node_modules", "pkg"), { recursive: true });
   const projectStore = new ProjectStore({ settingsDir: path.join(root, "settings") }); const redactor = new Redactor(); const starts = [];

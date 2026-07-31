@@ -29,7 +29,7 @@ Each project is assigned a scope id: SHA-256 of its canonical platform-normalize
     checkpoint.enc
 ```
 
-`state.json` is an atomic redacted snapshot, `events.jsonl` is append-only and redacted, and `checkpoint.enc` contains sensitive continuation state encrypted with Electron `safeStorage` or the existing machine-bound AES-GCM fallback. Runs move through `queued`, `running`, `waiting_approval`, `completed`, `failed`, `stopped`, `interrupted`.
+`state.json` is an atomic redacted snapshot, `events.jsonl` is append-only and redacted, and `checkpoint.enc` contains sensitive continuation state encrypted with Electron `safeStorage` or AES-256-GCM using a random per-installation key stored at `~/.wotch/agent-checkpoint.key`. The fallback key is created with owner-only permissions and is never derived from discoverable machine metadata. Runs move through `queued`, `running`, `waiting_approval`, `completed`, `failed`, `stopped`, `interrupted`.
 
 Concurrency pressure queues work in FIFO order. Automated starts carry durable dedupe keys; manual starts always create a new run. Wotch never automatically retries a run that may have produced side effects. After restart, running work becomes `interrupted` and offers Retry as a new run. Pending approvals remain recoverable and are evaluated against current policy before continuation. Cancellation uses `AbortController` through the harness and PTY backend, cascades to child runs, and an emergency stop demotes trust for the affected project-agent pairs.
 
